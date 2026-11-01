@@ -1,0 +1,284 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens.
+ * The app's components are written with Tailwind's `slate` (neutrals) and `indigo` (accent) names. Instead of renaming
+ * hundreds of class names, those two scales are redefined here: slate becomes the charcoal palette and indigo becomes a
+ * muted teal. Status colours (green, amber, red) keep Tailwind's defaults because they carry meaning.
+ *
+ *   slate-900  #111416  page background        slate-800  #1A1F21  cards
+ *   slate-700  #273033  borders, quiet buttons slate-100  #F0F2EE  text
+ *   indigo-400 #5CC8B0  the accent
+ */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  --color-slate-50: #f7f8f6;
+  --color-slate-100: #f0f2ee;
+  --color-slate-200: #d4dad6;
+  --color-slate-300: #b8c1bd;
+  --color-slate-400: #9aa5a1;
+  --color-slate-500: #7f8b87;
+  --color-slate-600: #3a4749;
+  --color-slate-700: #273033;
+  --color-slate-800: #1a1f21;
+  --color-slate-900: #111416;
+  --color-slate-950: #0b0d0e;
+
+  --color-indigo-50: #eaf8f4;
+  --color-indigo-100: #d3f1e9;
+  --color-indigo-200: #b0e5d8;
+  --color-indigo-300: #8cd8c6;
+  --color-indigo-400: #5cc8b0;
+  --color-indigo-500: #2d7a6a;
+  --color-indigo-600: #276c5d;
+  --color-indigo-700: #1f5a4d;
+  --color-indigo-800: #19473e;
+  --color-indigo-900: #123830;
+  --color-indigo-950: #0c2520;
+
+  /* Cards sit on the page with a hairline and a soft drop, not a heavy shadow. */
+  --shadow-lg: 0 10px 28px -14px rgb(0 0 0 / 0.55);
+
+  --ease-out-soft: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    background-color: var(--color-slate-900);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-slate-900);
+    color: var(--color-slate-100);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    /* Equal-width digits: a changing reading does not make its neighbours jump sideways. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  h1, h2, h3, h4 {
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+
+  ::selection {
+    background-color: color-mix(in srgb, var(--color-indigo-400) 35%, transparent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-slate-600) transparent;
+  }
+
+  /* One clear focus style for keyboard users, everywhere. */
+  :focus-visible {
+    outline: 2px solid var(--color-indigo-400);
+    outline-offset: 2px;
+  }
+
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline-offset: 0;
+    border-color: var(--color-indigo-400);
+  }
+
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+/* ------------------------------------------------------------------------------------------
+ * Surfaces
+ * Every card in the app is `rounded-xl bg-slate-800`; give them one hairline border in the palette.
+ * ---------------------------------------------------------------------------------------- */
+[class~="rounded-xl"][class~="bg-slate-800"] {
+  border: 1px solid var(--color-slate-700);
+  transition: border-color 200ms ease;
+}
+
+section[class~="rounded-xl"][class~="bg-slate-800"]:hover {
+  border-color: var(--color-slate-600);
+}
+
+/* ------------------------------------------------------------------------------------------
+ * Interaction states (fast, no bounce)
+ * ---------------------------------------------------------------------------------------- */
+button,
+a {
+  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease, opacity 150ms ease, transform 150ms ease;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+input,
+select,
+textarea {
+  transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+}
+
+[role="progressbar"] > div {
+  transition: width 240ms var(--ease-out-soft), background-color 200ms ease;
+}
+
+/* ------------------------------------------------------------------------------------------
+ * Motion
+ * ---------------------------------------------------------------------------------------- */
+@keyframes page-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes reveal {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes item-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes value-in {
+  from { opacity: 0.35; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes bar-grow {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+
+@keyframes alert-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes alert-ring {
+  from { box-shadow: 0 0 0 0 rgb(248 113 113 / 0.4); }
+  to { box-shadow: 0 0 0 7px rgb(248 113 113 / 0); }
+}
+
+/* Pages are transitioned by Framer Motion (see App.tsx). Let the faint backdrop show through the page background. */
+main[class~="bg-slate-900"] {
+  background-color: transparent;
+}
+
+/* Cards reveal one after another (a small stagger, capped so a long page never feels slow). */
+main > div > *:not(header),
+main > form {
+  animation: reveal 240ms var(--ease-out-soft) both;
+}
+
+main > div > :nth-child(2) { animation-delay: 30ms; }
+main > div > :nth-child(3) { animation-delay: 60ms; }
+main > div > :nth-child(4) { animation-delay: 90ms; }
+main > div > :nth-child(5) { animation-delay: 120ms; }
+main > div > :nth-child(n + 6) { animation-delay: 150ms; }
+
+/* New list entries, chat messages and opened details ease in. Existing ones are not replayed by data refreshes. */
+section li,
+[aria-live="polite"] > *,
+details[open] > :not(summary) {
+  animation: item-in 180ms ease-out both;
+}
+
+/* A sensor reading that changes settles into place (the element is re-created when its text changes). */
+.value-tick {
+  animation: value-in 200ms ease-out both;
+}
+
+/* Chart bars grow from the baseline; each bar sets its own small delay. */
+.chart-bar {
+  transform-origin: bottom;
+  animation: bar-grow 240ms var(--ease-out-soft) both;
+}
+
+/* Alerts slide in; a critical one also draws the eye once with a soft ring. */
+[role="alert"] {
+  animation: alert-in 200ms ease-out both;
+}
+
+[role="alert"].alert-critical {
+  animation: alert-in 200ms ease-out both, alert-ring 450ms ease-out 120ms 1 both;
+}
+
+/* ------------------------------------------------------------------------------------------
+ * Loading placeholders and the background wash
+ * ---------------------------------------------------------------------------------------- */
+@keyframes shimmer {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+
+.skeleton {
+  background-color: var(--color-slate-700);
+  background-image: linear-gradient(90deg, transparent 0%, rgb(240 242 238 / 0.06) 50%, transparent 100%);
+  background-size: 60% 100%;
+  background-repeat: no-repeat;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes drift-a {
+  from { transform: translate3d(-6%, -4%, 0); }
+  to { transform: translate3d(8%, 6%, 0); }
+}
+
+@keyframes drift-b {
+  from { transform: translate3d(6%, 8%, 0); }
+  to { transform: translate3d(-8%, -6%, 0); }
+}
+
+.backdrop-shape {
+  position: absolute;
+  width: 70vmax;
+  height: 70vmax;
+  border-radius: 9999px;
+  opacity: 0.07;
+  will-change: transform;
+}
+
+.backdrop-shape-a {
+  top: -35vmax;
+  left: -20vmax;
+  background: radial-gradient(closest-side, var(--color-indigo-400), transparent);
+  animation: drift-a 55s ease-in-out infinite alternate;
+}
+
+.backdrop-shape-b {
+  bottom: -40vmax;
+  right: -25vmax;
+  background: radial-gradient(closest-side, var(--color-indigo-500), transparent);
+  animation: drift-b 70s ease-in-out infinite alternate;
+}
+/* Respect the system setting: no movement, only instant state changes. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  button:active:not(:disabled) {
+    transform: none;
+  }
+
+  .backdrop-shape,
+  .skeleton {
+    animation: none !important;
+  }
+}

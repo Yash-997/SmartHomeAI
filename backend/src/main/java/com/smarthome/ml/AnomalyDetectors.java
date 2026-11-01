@@ -1,0 +1,182 @@
+package com.smarthome.ml;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+
+/**
+ * The anomaly rules, as pure functions. Each one looks at readings and returns a finding that explains itself in
+ * plain words and carries the numbers behind it, or nothing. They never see a "zero" where a reading is missing:
+ * a missing value is its own finding (MISSING_DATA) and is invisible to the statistical checks.
+ *
+ * <p>These findings are advisory. The device's gas warning is firmware logic that does not depend on any of this,
+ * and nothing here sends commands.
+ */
+public final class AnomalyDetectors {
+
+	private static final String GAS_NOTE = "Advisory only: the device's own gas warning works independently of this analysis.";
+
+	private AnomalyDetectors() {
+	}
+
+	/** A reading far from normal. Uses the robust z-score: (value - median) / (1.4826 x MAD). */
+	public static Optional<Finding> outlier(Metric metric, SensorSample sample, Baselines.Stat baseline, MlProperties.Anomaly cfg) {
+		Double value = metric.of(sample);
+		if (value == null || baseline == null) {
+			return Optional.empty();   // nothing to judge, or no idea what normal is: stay silent rather than guess
+		}
+		double z = RobustStats.score(value, baseline.median(), baseline.scale());
+		double abs = Math.abs(z);
+		if (abs < cfg.warnZ()) {
+			return Optional.empty();
+		}
+		AnomalySeverity severity = abs >= cfg.criticalZ() ? AnomalySeverity.CRITICAL : AnomalySeverity.WARNING;
+		String unit = unit(metric);
+		String explanation = String.format(Locale.ROOT,
+				"%s %s is %.1f robust standard deviations %s the typical %s%s for %s (median of %d readings over the last %d days; typical spread about %s%s).",
+				metric.scope(), num(value) + unit, abs, z > 0 ? "above" : "below", num(baseline.median()), unit,
+				baseline.hourSpecific() ? "this time of day" : "this sensor overall", baseline.n(), cfg.baselineDays(),
+				num(baseline.scale()), unit);
+		Map<String, Object> d = new LinkedHashMap<>();
+		d.put("method", "robust z-score (median and MAD)");
+		d.put("value", value);
+		d.put("median", baseline.median());
+		d.put("spread", baseline.scale());
+		d.put("score", Math.round(z * 100) / 100.0);
+		d.put("baselineSamples", baseline.n());
+		d.put("timeOfDayBaseline", baseline.hourSpecific());
+		d.put("warnAt", cfg.warnZ());
+		d.put("criticalAt", cfg.criticalZ());
+		if (metric == Metric.GAS) {
+			d.put("note", GAS_NOTE);
+		}
+		return Optional.of(new Finding(AnomalyKind.STATISTICAL_OUTLIER, metric.scope(), severity,
+				metric == Metric.GAS ? explanation + " " + GAS_NOTE : explanation, d, sample.at()));
+	}
+
+	/** A value outside what the sensor can really produce (DHT22 temperature range), or an ADC reading pinned at its maximum. */
+	public static Optional<Finding> plausibility(Metric metric, SensorSample sample, MlProperties.Anomaly cfg) {
+		Double value = metric.of(sample);
+		if (value == null) {
+			return Optional.empty();
+		}
+		if (metric == Metric.TEMPERATURE && (value < cfg.temperatureMin() || value > cfg.temperatureMax())) {
+			Map<String, Object> d = new LinkedHashMap<>();
+			d.put("value", value);
+			d.put("usableMin", cfg.temperatureMin());
+			d.put("usableMax", cfg.temperatureMax());
+			return Optional.of(new Finding(AnomalyKind.OUT_OF_RANGE, metric.scope(), AnomalySeverity.CRITICAL,
+					String.format(Locale.ROOT, "temperature %s °C is outside the range the DHT22 can measure (%s to %s °C): most likely a sensor or wiring fault.",
+							num(value), num(cfg.temperatureMin()), num(cfg.temperatureMax())), d, sample.at()));
+		}
+		if (metric == Metric.GAS && value >= cfg.gasSaturationRaw()) {
+			Map<String, Object> d = new LinkedHashMap<>();
+			d.put("value", value);
+			d.put("adcMaximum", cfg.gasSaturationRaw());
+			d.put("note", GAS_NOTE);
+			return Optional.of(new Finding(AnomalyKind.OUT_OF_RANGE, metric.scope(), AnomalySeverity.WARNING,
+					"gasRaw is at the ADC maximum (" + cfg.gasSaturationRaw() + "): the sensor output is saturated or disconnected, or the gas level is extreme. Check the sensor. "
+							+ GAS_NOTE, d, sample.at()));
+		}
+		return Optional.empty();
+	}
+
+	/** A reading the backend refused to store because it was outside the accepted range (reported by the ingest path). */
+	public static Finding rejectedReading(String scope, double value, Instant at) {
+		Map<String, Object> d = new LinkedHashMap<>();
+		d.put("value", value);
+		d.put("handling", "message rejected, value not stored");
+		return new Finding(AnomalyKind.OUT_OF_RANGE, scope, AnomalySeverity.WARNING,
+				scope + " " + num(value) + " is outside the accepted range, so the whole message was rejected and not stored. The sensor may be faulty.",
+				d, at);
+	}
+
+	/**
+	 * The same exact value in each of the latest N readings. Readings must be newest first; missing values are
+	 * skipped, never counted as repeats.
+	 */
+	public static Optional<Finding> stuck(Metric metric, List<SensorSample> newestFirst, MlProperties.Anomaly cfg) {
+		int needed = metric == Metric.GAS ? cfg.stuckCountGas() : cfg.stuckCountTempHum();
+		double first = 0;
+		int run = 0;
+		Instant newest = null;
+		Instant oldest = null;
+		for (SensorSample s : newestFirst) {
+			Double v = metric.of(s);
+			if (v == null) {
+				continue;
+			}
+			if (run == 0) {
+				first = v;
+				newest = s.at();
+			} else if (Double.compare(v, first) != 0) {
+				break;
+			}
+			run++;
+			oldest = s.at();
+			if (run >= needed) {
+				break;
+			}
+		}
+		if (run < needed) {
+			return Optional.empty();
+		}
+		long minutes = Math.max(1, Duration.between(oldest, newest).toMinutes());
+		Map<String, Object> d = new LinkedHashMap<>();
+		d.put("value", first);
+		d.put("identicalReadings", run);
+		d.put("minutes", minutes);
+		AnomalySeverity severity = metric == Metric.GAS ? AnomalySeverity.WARNING : AnomalySeverity.INFO;
+		return Optional.of(new Finding(AnomalyKind.STUCK_VALUE, metric.scope(), severity,
+				String.format(Locale.ROOT, "%s has reported exactly %s%s in each of the last %d readings (about %d minutes). A working sensor normally varies slightly; it may be frozen. "
+						+ "(If the room really is that constant this can be ignored.)", metric.scope(), num(first), unit(metric), run, minutes) + (metric == Metric.GAS ? " " + GAS_NOTE : ""),
+				d, newest));
+	}
+
+	/** The latest N messages all lack this sensor's value although the device is still reporting. Newest first. */
+	public static Optional<Finding> missing(Metric metric, List<SensorSample> newestFirst, MlProperties.Anomaly cfg) {
+		int needed = metric == Metric.GAS ? cfg.missingCountGas() : cfg.missingCountTempHum();
+		if (newestFirst.size() < needed) {
+			return Optional.empty();
+		}
+		for (int i = 0; i < needed; i++) {
+			if (metric.of(newestFirst.get(i)) != null) {
+				return Optional.empty();
+			}
+		}
+		Instant newest = newestFirst.get(0).at();
+		long minutes = Math.max(1, Duration.between(newestFirst.get(needed - 1).at(), newest).toMinutes());
+		Map<String, Object> d = new LinkedHashMap<>();
+		d.put("missingMessages", needed);
+		d.put("minutes", minutes);
+		return Optional.of(new Finding(AnomalyKind.MISSING_DATA, metric.scope(), AnomalySeverity.WARNING,
+				String.format(Locale.ROOT, "No %s value in the last %d messages (about %d minutes) although the device is still reporting. The sensor may be failing, disconnected%s.",
+						metric.scope(), needed, minutes, metric == Metric.GAS ? ", or the MQ-2 may not have finished warming up" : ""), d, newest));
+	}
+
+	/** The device has not reported for too long. */
+	public static Optional<Finding> stale(Instant latest, Instant now, MlProperties.Anomaly cfg) {
+		Duration age = Duration.between(latest, now);
+		if (age.compareTo(Duration.ofMinutes(cfg.staleMinutes())) < 0 || age.compareTo(Duration.ofDays(cfg.staleGiveUpDays())) > 0) {
+			return Optional.empty();
+		}
+		Map<String, Object> d = new LinkedHashMap<>();
+		d.put("lastReadingAt", latest.toString());
+		d.put("silentMinutes", age.toMinutes());
+		return Optional.of(new Finding(AnomalyKind.STALE_DATA, "device", AnomalySeverity.WARNING,
+				"No data from this device for " + age.toMinutes() + " minutes (last reading " + latest
+						+ "). It may be powered off, out of Wi-Fi range, or disconnected from the broker.", d, latest));
+	}
+
+	private static String unit(Metric m) {
+		return m.unit().equals("raw") ? "" : " " + m.unit();
+	}
+
+	private static String num(double v) {
+		return v == Math.rint(v) && Math.abs(v) < 1e9 ? String.valueOf((long) v) : String.format(Locale.ROOT, "%.1f", v);
+	}
+}
