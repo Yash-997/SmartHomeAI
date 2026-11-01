@@ -430,6 +430,36 @@ export interface SecurityEvent {
   acknowledgedAt: string | null
 }
 
+// ---- gas/smoke email alerts ----
+export type EmailDelivery = 'PENDING' | 'SENT' | 'FAILED' | 'SKIPPED'
+export interface GasAlertConfig {
+  enabled: boolean
+  mailConfigured: boolean
+  threshold: number
+  recoveryThreshold: number
+  confirmReadings: number
+  /** Masked, e.g. "y***@gmail.com"; null when the account has no email. */
+  recipient: string | null
+}
+export interface GasAlert {
+  id: string
+  deviceId: string
+  deviceName: string
+  state: 'ACTIVE' | 'RECOVERED'
+  threshold: number
+  triggerGasRaw: number
+  peakGasRaw: number
+  lastGasRaw: number
+  startedAt: string
+  recoveredAt: string | null
+  alertEmailStatus: EmailDelivery
+  alertEmailSentAt: string | null
+  alertEmailError: string | null
+  recoveryEmailStatus: EmailDelivery | null
+  recoveryEmailSentAt: string | null
+  recoveryEmailError: string | null
+}
+
 // ---- digital twin ----
 export type SyncState = 'NO_DESIRED' | 'IN_SYNC' | 'PENDING' | 'DRIFT' | 'UNREPORTED' | 'UNKNOWN'
 export interface OutputTwin {
@@ -513,6 +543,8 @@ export const api = {
     request<SecuritySettings>('/api/security/config', { method: 'PUT', body: JSON.stringify(cfg) }, true),
   securityEvents: (limit = 30) => request<SecurityEvent[]>(`/api/security/events?limit=${limit}`, {}, true),
   acknowledgeEvent: (id: string) => request<SecurityEvent>(`/api/security/events/${id}/acknowledge`, { method: 'POST' }, true),
+  gasAlertConfig: () => request<GasAlertConfig>('/api/alerts/gas/config', {}, true),
+  gasAlerts: (limit = 20) => request<GasAlert[]>(`/api/alerts/gas?limit=${limit}`, {}, true),
   acknowledgeAllEvents: () => request<{ acknowledged: number }>('/api/security/events/acknowledge-all', { method: 'POST' }, true),
   twins: () => request<Twin[]>('/api/twins', {}, true),
   recommendations: () => request<RecommendationList>('/api/recommendations', {}, true),
@@ -552,6 +584,7 @@ export const api = {
     request<Device>(`/api/devices/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }, true),
   sendCommand: (deviceId: string, action: string, value: string) =>
     request<Command>(`/api/devices/${deviceId}/commands`, { method: 'POST', body: JSON.stringify({ action, value }) }, true),
+  getCommand: (deviceId: string, commandId: string) => request<Command>(`/api/devices/${deviceId}/commands/${commandId}`, {}, true),
   listRules: () => request<Rule[]>('/api/automations', {}, true),
   createRule: (r: RuleRequest) => request<Rule>('/api/automations', { method: 'POST', body: JSON.stringify(r) }, true),
   updateRule: (id: string, r: RuleRequest) =>

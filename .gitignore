@@ -21,3 +21,11 @@ Thumbs.db
 
 # Firmware secrets
 firmware/**/secrets.h
+
+# Local DB backups (contain role password hashes)
+backups/
+
+# Real env files anywhere in the tree (templates stay tracked)
+**/.env
+**/.env.*
+!**/.env.example

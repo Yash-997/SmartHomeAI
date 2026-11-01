@@ -261,6 +261,26 @@ details[open] > :not(summary) {
   background: radial-gradient(closest-side, var(--color-indigo-500), transparent);
   animation: drift-b 70s ease-in-out infinite alternate;
 }
+/* Voice assistant: bars that bounce while listening or speaking, and a soft ring on the live microphone. */
+.wave-bar {
+  transform-origin: center;
+  animation: wave 0.9s ease-in-out infinite;
+}
+
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.35); }
+  50% { transform: scaleY(1); }
+}
+
+.mic-live {
+  animation: mic-ring 1.4s ease-out infinite;
+}
+
+@keyframes mic-ring {
+  0% { box-shadow: 0 0 0 0 rgb(248 113 113 / 0.55); }
+  100% { box-shadow: 0 0 0 18px rgb(248 113 113 / 0); }
+}
+
 /* Respect the system setting: no movement, only instant state changes. */
 @media (prefers-reduced-motion: reduce) {
   *,

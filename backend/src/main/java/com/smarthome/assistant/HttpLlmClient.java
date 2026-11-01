@@ -21,20 +21,23 @@ public class HttpLlmClient implements LlmClient {
 	static final String ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-5-5";
 	private static final String OPENAI_DEFAULT_BASE = "https://api.openai.com/v1";
 	private static final String ANTHROPIC_DEFAULT_BASE = "https://api.anthropic.com";
+	private static final String GROQ_DEFAULT_BASE = "https://api.groq.com/openai/v1";
 
 	private final Llm cfg;
 	private final ObjectMapper mapper;
 	private final boolean anthropic;
+	private final boolean groq;
 
 	public HttpLlmClient(Llm cfg, ObjectMapper mapper) {
 		this.cfg = cfg;
 		this.mapper = mapper;
 		this.anthropic = "anthropic".equalsIgnoreCase(cfg.provider());
+		this.groq = "groq".equalsIgnoreCase(cfg.provider());
 	}
 
 	@Override
 	public String provider() {
-		return anthropic ? "anthropic" : "openai";
+		return anthropic ? "anthropic" : groq ? "groq" : "openai";
 	}
 
 	@Override
@@ -45,7 +48,7 @@ public class HttpLlmClient implements LlmClient {
 
 	private String base() {
 		String b = cfg.baseUrl() == null ? "" : cfg.baseUrl().trim();
-		return b.isEmpty() ? (anthropic ? ANTHROPIC_DEFAULT_BASE : OPENAI_DEFAULT_BASE) : b;
+		return b.isEmpty() ? (anthropic ? ANTHROPIC_DEFAULT_BASE : groq ? GROQ_DEFAULT_BASE : OPENAI_DEFAULT_BASE) : b;
 	}
 
 	private boolean hasKey() {
@@ -57,8 +60,8 @@ public class HttpLlmClient implements LlmClient {
 		if (model().isEmpty()) {
 			return "No model name is set (LLM_MODEL).";
 		}
-		if (anthropic && !hasKey()) {
-			return "No API key is set (LLM_API_KEY).";
+		if ((anthropic || groq) && !hasKey()) {
+			return groq ? "No API key is set (GROQ_API_KEY)." : "No API key is set (LLM_API_KEY).";
 		}
 		if (!anthropic && !hasKey() && base().equals(OPENAI_DEFAULT_BASE)) {
 			return "No API key is set (LLM_API_KEY).";

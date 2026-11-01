@@ -44,6 +44,30 @@ class RerankTest {
 	}
 
 	@Test
+	void aReadingQuestionPutsDeviceStatusFirstAndStillPrefersTheNamedDevice() {
+		Hit help = hit("KNOWLEDGE", null, 0.50, "temperature range help");
+		Hit history = hit("SENSOR_HISTORY", FOX, 0.40, "fox history");
+		Hit owl = hit("DEVICE_STATUS", OWL, 0.09, "owl status");
+		Hit fox = hit("DEVICE_STATUS", FOX, 0.05, "fox status");
+		Hit overview = hit("DEVICE_STATUS", null, 0.30, "overview");
+
+		List<Hit> generic = AssistantService.rerank("what is the current temperature?", NAMES, List.of(help, history, owl, fox, overview), 3, true);
+		assertEquals(List.of(owl, fox, help), generic, "per-device status first (by score), then the rest; the overview is not a reading");
+
+		List<Hit> named = AssistantService.rerank("what is the temperature in fox den?", NAMES, List.of(help, history, owl, fox), 2, true);
+		assertEquals(List.of(fox, owl), named);
+	}
+
+	@Test
+	void readingQuestionsAreRecognised() {
+		assertTrue(AssistantService.asksAboutReadings("What is the current temperature?"));
+		assertTrue(AssistantService.asksAboutReadings("Explain the latest gas sensor readings."));
+		assertTrue(AssistantService.asksAboutReadings("what is the humidity"));
+		assertTrue(!AssistantService.asksAboutReadings("How do I pair a new device?"));
+		assertTrue(!AssistantService.asksAboutReadings("Which automation rules do I have?"));
+	}
+
+	@Test
 	void theResultIsCutToTopK() {
 		List<Hit> in = List.of(hit("KNOWLEDGE", null, 0.9, "a"), hit("KNOWLEDGE", null, 0.8, "b"), hit("KNOWLEDGE", null, 0.7, "c"));
 		assertEquals(2, AssistantService.rerank("x", NAMES, in, 2).size());

@@ -117,6 +117,136 @@ class GasWarning {
   int streak_ = 0;
 };
 
+// ---------------------------------------------------------------------------------------------------------------------
+// One MQ-2 sample from a burst of ADC conversions: the MEDIAN of the conversions that succeeded. Failed conversions
+// (ok[i] == false: the ADC was busy, e.g. ADC2 while Wi-Fi runs) are left out instead of being counted as 0, and the
+// median ignores a few stray values (e.g. zeros from an ADC that has not settled) that would drag a mean down.
+// At least half must succeed, otherwise there is no sample. minOut/maxOut give the spread, for diagnostics.
+// ---------------------------------------------------------------------------------------------------------------------
+inline bool medianValidReads(const int* values, const bool* ok, int n, int& out, int* minOut = nullptr, int* maxOut = nullptr) {
+  int good[64];
+  int g = 0;
+  for (int i = 0; i < n && g < 64; i++) {
+    if (!ok[i] || values[i] < 0 || values[i] > 4095) continue;
+    good[g++] = values[i];
+  }
+  if (n <= 0 || g * 2 < n) return false;
+  for (int i = 1; i < g; i++) {   // insertion sort: g is small
+    int v = good[i], j = i - 1;
+    while (j >= 0 && good[j] > v) { good[j + 1] = good[j]; j--; }
+    good[j + 1] = v;
+  }
+  out = (g % 2) ? good[g / 2] : (good[g / 2 - 1] + good[g / 2]) / 2;
+  if (minOut) *minOut = good[0];
+  if (maxOut) *maxOut = good[g - 1];
+  return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// LED self-test (serial command "ledtest"). Feeds SIMULATED readings through the real gas warning logic: first a high
+// value for highMs, then a low value for lowMs. Returns false when the test is over. Simulated values are never
+// published as telemetry.
+// ---------------------------------------------------------------------------------------------------------------------
+inline bool ledTestValue(uint32_t elapsedMs, uint32_t highMs, uint32_t lowMs, int highRaw, int lowRaw, int& out) {
+  if (elapsedMs < highMs) { out = highRaw; return true; }
+  if (elapsedMs < highMs + lowMs) { out = lowRaw; return true; }
+  return false;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// DHT22 frame decoding. The sensor sends 40 bits; each is a ~50 us LOW followed by a HIGH of ~26-28 us (0) or ~70 us
+// (1). lowUs/highUs are the measured durations; a negative value means that pulse timed out. A bit is 1 when its HIGH
+// is longer than its LOW, which tolerates clock differences between sensors. Bytes: humidity x10 (2), temperature x10
+// (2, top bit = negative), checksum = low byte of the sum of the first four.
+// ---------------------------------------------------------------------------------------------------------------------
+enum class DhtResult { Ok, Timeout, Checksum, OutOfRange, AllZero };
+
+inline const char* dhtResultName(DhtResult r) {
+  switch (r) {
+    case DhtResult::Ok: return "ok";
+    case DhtResult::Timeout: return "timeout";
+    case DhtResult::Checksum: return "checksum";
+    case DhtResult::OutOfRange: return "out of range";
+    case DhtResult::AllZero: return "all zero";
+  }
+  return "?";
+}
+
+inline DhtResult dht22Decode(const int32_t* lowUs, const int32_t* highUs, int bits, float& tempC, float& humPct) {
+  if (bits != 40) return DhtResult::Timeout;
+  uint8_t b[5] = {0, 0, 0, 0, 0};
+  for (int i = 0; i < 40; i++) {
+    if (lowUs[i] < 0 || highUs[i] < 0) return DhtResult::Timeout;
+    b[i / 8] = (uint8_t)((b[i / 8] << 1) | (highUs[i] > lowUs[i] ? 1 : 0));
+  }
+  if ((uint8_t)(b[0] + b[1] + b[2] + b[3]) != b[4]) return DhtResult::Checksum;
+  if ((b[0] | b[1] | b[2] | b[3] | b[4]) == 0) return DhtResult::AllZero;   // a line stuck LOW decodes like this
+  const float h = ((b[0] << 8) | b[1]) * 0.1f;
+  float t = (((b[2] & 0x7F) << 8) | b[3]) * 0.1f;
+  if (b[2] & 0x80) t = -t;
+  if (h < 0 || h > 100 || t < -40 || t > 80) return DhtResult::OutOfRange;   // DHT22 datasheet limits
+  tempC = t;
+  humPct = h;
+  return DhtResult::Ok;
+}
+
+/** How long until the next radio pause for an ADC2 gas sample: sooner while the gas is near the threshold or a warning
+ *  is on, so an incident is confirmed (and ended) quickly. */
+inline uint32_t gasPauseInterval(int lastRaw, bool haveRaw, bool warning, int clearBelow, uint32_t normalMs, uint32_t fastMs) {
+  if (warning || (haveRaw && lastRaw >= clearBelow)) return fastMs;
+  return normalMs;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// PIR motion filter, fed the raw pin level with the current time (ms, wrap-safe).
+//   warm-up : for warmupMs after start the output is ignored (a PIR's output is unreliable while it settles).
+//   debounce: a level change only counts once it has been stable for debounceMs (spikes and glitches are ignored).
+//   hold    : motion stays true for holdMs after the debounced level returns LOW, so it does not flicker.
+// A genuine HIGH that lasts longer than debounceMs always produces motion, so real events are never hidden.
+// ---------------------------------------------------------------------------------------------------------------------
+class MotionFilter {
+ public:
+  MotionFilter(uint32_t debounceMs, uint32_t holdMs, uint32_t warmupMs)
+      : debounce_(debounceMs), hold_(holdMs), warmup_(warmupMs) {}
+
+  void start(uint32_t nowMs) { start_ = nowMs; started_ = true; }
+
+  bool update(bool rawHigh, uint32_t nowMs) {
+    if (!started_) start(nowMs);
+    if (rawHigh != candidate_) {
+      candidate_ = rawHigh;
+      candidateSince_ = nowMs;
+    }
+    if (candidate_ != stable_ && nowMs - candidateSince_ >= debounce_) {
+      stable_ = candidate_;
+      if (stable_) highSince_ = nowMs;
+      else lowSince_ = nowMs;
+    }
+    if (warmingUp(nowMs)) {
+      motion_ = false;
+    } else if (stable_) {
+      motion_ = true;
+    } else {
+      motion_ = motion_ && (nowMs - lowSince_ < hold_);
+    }
+    return motion_;
+  }
+
+  bool active() const { return motion_; }
+  bool warmingUp(uint32_t nowMs) const { return started_ && nowMs - start_ < warmup_; }
+  /** How long the debounced output has been HIGH without a break (0 when LOW). */
+  uint32_t highFor(uint32_t nowMs) const { return stable_ ? nowMs - highSince_ : 0; }
+  /** Debounced pin level (diagnostics). */
+  bool stable() const { return stable_; }
+  /** The level waiting to become stable (diagnostics): differs from stable() while a change is being debounced. */
+  bool candidate() const { return candidate_; }
+
+ private:
+  uint32_t debounce_, hold_, warmup_;
+  uint32_t start_ = 0, candidateSince_ = 0, highSince_ = 0, lowSince_ = 0;
+  bool started_ = false, candidate_ = false, stable_ = false, motion_ = false;
+};
+
 // =====================================================================================================================
 // Remote output control (Chunk 5)
 // =====================================================================================================================

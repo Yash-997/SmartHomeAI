@@ -127,6 +127,34 @@ class HttpModelClientsTest {
 		assertEquals(Reason.NOT_CONFIGURED, assertThrows(LlmUnavailableException.class, () -> hosted.complete("s", ASK)).reason());
 	}
 
+	// ---- Groq (OpenAI-compatible, used by the assistant in Docker) -----------------------------
+
+	@Test
+	void groqProducesAnAnswerThroughTheOpenAiCompatibleEndpoint() throws Exception {
+		reply = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"It is 24.6 C [S1].\"}}]}";
+		HttpLlmClient groq = new HttpLlmClient(new Llm("groq", base() + "/openai/v1", KEY, "llama-3.3-70b-versatile", 5, 300, 0.1), mapper);
+
+		assertTrue(groq.configured());
+		assertEquals("groq", groq.provider());
+		String text = groq.complete("SYSTEM", List.of(Message.user("[S1] (DEVICE_STATUS) temperature 24.6\n\nUser question: what is the current temperature")));
+
+		assertEquals("It is 24.6 C [S1].", text);
+		assertEquals("/openai/v1/chat/completions", path.get());
+		assertEquals("Bearer " + KEY, headers.get().getFirst("Authorization"));
+		JsonNode req = mapper.readTree(body.get());
+		assertEquals("llama-3.3-70b-versatile", req.get("model").asString());
+		assertTrue(req.get("messages").get(1).get("content").asString().contains("temperature 24.6"), "the retrieved context is sent");
+		assertFalse(body.get().contains(KEY));
+	}
+
+	@Test
+	void groqWithoutAKeyIsNotConfiguredAndNamesTheRightSetting() {
+		HttpLlmClient groq = new HttpLlmClient(new Llm("groq", "", "", "llama-3.3-70b-versatile", 5, 300, 0.1), mapper);
+		assertFalse(groq.configured());
+		assertTrue(groq.notConfiguredReason().contains("GROQ_API_KEY"));
+		assertEquals(Reason.NOT_CONFIGURED, assertThrows(LlmUnavailableException.class, () -> groq.complete("s", ASK)).reason());
+	}
+
 	// ---- Anthropic -----------------------------------------------------------------------------
 
 	@Test

@@ -146,6 +146,30 @@ public class RagChunkStore {
 		return hits.stream().filter(h -> h.score() >= minScore).toList();
 	}
 
+	/**
+	 * The caller's OWN chunks of one source type (never shared help text, never another user's), scored against the query
+	 * but without a minimum score. Used for questions about the present readings: a device's status chunk lists many
+	 * fields, so its word-overlap score can be low even though it is exactly the record that answers the question.
+	 */
+	public List<Hit> ownedOfType(UUID callerId, String sourceType, float[] query, String model, int limit) {
+		if (callerId == null) {
+			throw new IllegalArgumentException("A search always needs the caller's user id");
+		}
+		if (norm(query) == 0) {
+			return List.of();
+		}
+		record Scored(Hit hit, double score) {
+		}
+		List<Scored> all = jdbc.query("select id, owner_user_id, device_uuid, source_type, source_key, chunk_index, title, content, as_of, "
+				+ "cast(embedding as varchar) as embedding from rag_chunks where owner_user_id = ? and source_type = ? and embedding_model = ? "
+				+ "and embedding_dims = ? and embedding is not null",
+				(rs, i) -> {
+					double s = cosine(query, parse(rs.getString("embedding")));
+					return new Scored(hit(rs, s), s);
+				}, callerId, sourceType, model, query.length);
+		return all.stream().sorted(Comparator.comparingDouble(Scored::score).reversed()).limit(limit).map(Scored::hit).toList();
+	}
+
 	private List<Hit> searchPostgres(UUID caller, float[] q, String model, int topK) {
 		String vec = literal(q);
 		return jdbc.query("select id, owner_user_id, device_uuid, source_type, source_key, chunk_index, title, content, as_of, "

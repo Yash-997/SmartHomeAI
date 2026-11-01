@@ -1,4 +1,4 @@
-P// Turns a received MQTT payload into CommandFields for validateCommand(). Separate from NetLink.cpp so the exact
+// Turns a received MQTT payload into CommandFields for validateCommand(). Separate from NetLink.cpp so the exact
 // parsing can be unit-tested on a PC against the backend's real wire format (ArduinoJson is header-only).
 #pragma once
 

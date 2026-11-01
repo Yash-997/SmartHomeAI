@@ -170,7 +170,19 @@ public class AssistantService {
 			indexer.refreshLive(ownerId);
 			float[] q = embedder.embedOne(question);
 			int topK = props.rag().topK();
-			hits = rerank(question, names(ownerId), store.search(ownerId, q, embedder.modelId(), topK * 4, props.rag().minScore()), topK);
+			List<Hit> candidates = new ArrayList<>(store.search(ownerId, q, embedder.modelId(), topK * 4, props.rag().minScore()));
+			boolean readings = asksAboutReadings(question);
+			if (readings) {
+				// The owner's per-device status chunks hold the latest stored values; make sure they are candidates even
+				// when their word-overlap score is below the cut-off (they list many fields, which dilutes the score).
+				Set<UUID> seen = candidates.stream().map(Hit::id).collect(Collectors.toSet());
+				for (Hit h : store.ownedOfType(ownerId, LiveFacts.DEVICE_STATUS, q, embedder.modelId(), MAX_STATUS_CHUNKS)) {
+					if (h.deviceUuid() != null && seen.add(h.id())) {
+						candidates.add(h);
+					}
+				}
+			}
+			hits = rerank(question, names(ownerId), candidates, topK, readings);
 		} catch (LlmUnavailableException e) {
 			return new Answer(AnswerStatus.RETRIEVAL_UNAVAILABLE, "I could not search your data right now: " + e.getMessage()
 					+ " Nothing was guessed. Please try again later.", List.of(), List.of(), null);
@@ -230,6 +242,15 @@ public class AssistantService {
 	 * The boost only reorders chunks the owner-scoped search already returned; it can never add anything.
 	 */
 	static List<Hit> rerank(String question, Map<UUID, String> deviceNames, List<Hit> candidates, int topK) {
+		return rerank(question, deviceNames, candidates, topK, false);
+	}
+
+	/**
+	 * With {@code readings} (a question about sensor values), the devices' status chunks come first: they are the
+	 * record of the latest stored reading, which such a question is about. Still only chunks the owner-scoped searches
+	 * returned.
+	 */
+	static List<Hit> rerank(String question, Map<UUID, String> deviceNames, List<Hit> candidates, int topK, boolean readings) {
 		String q = question.toLowerCase(java.util.Locale.ROOT);
 		Set<UUID> mentioned = new java.util.HashSet<>();
 		deviceNames.forEach((id, name) -> {
@@ -237,9 +258,24 @@ public class AssistantService {
 				mentioned.add(id);
 			}
 		});
-		return candidates.stream()
-				.sorted(java.util.Comparator.comparingDouble((Hit h) -> -(h.score() + boost(h, mentioned))))
-				.limit(topK).toList();
+		java.util.Comparator<Hit> byScore = java.util.Comparator.comparingDouble((Hit h) -> -(h.score() + boost(h, mentioned)));
+		java.util.Comparator<Hit> order = readings
+				? java.util.Comparator.comparingInt((Hit h) -> isDeviceStatus(h) ? 0 : 1).thenComparing(byScore)
+				: byScore;
+		return candidates.stream().sorted(order).limit(topK).toList();
+	}
+
+	private static boolean isDeviceStatus(Hit h) {
+		return LiveFacts.DEVICE_STATUS.equals(h.sourceType()) && h.deviceUuid() != null;
+	}
+
+	private static final int MAX_STATUS_CHUNKS = 3;
+	private static final java.util.regex.Pattern READING_WORDS = java.util.regex.Pattern.compile(
+			"\\b(temperature|temp|degrees?|celsius|hot|cold|warm|humidity|humid|gas|smoke|mq-?2|motion|movement|pir|readings?|sensors?|values?)\\b");
+
+	/** True for questions about sensor values ("what is the current temperature", "explain the latest gas readings"). */
+	static boolean asksAboutReadings(String question) {
+		return READING_WORDS.matcher(question.toLowerCase(java.util.Locale.ROOT)).find();
 	}
 
 	private static double boost(Hit h, Set<UUID> mentioned) {

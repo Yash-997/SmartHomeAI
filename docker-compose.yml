@@ -33,6 +33,10 @@ services:
     environment:
       MQTT_ADMIN_USER: ${MQTT_ADMIN_USER:-smarthome-admin}
       MQTT_ADMIN_PASSWORD: ${MQTT_ADMIN_PASSWORD:?Set MQTT_ADMIN_PASSWORD in .env}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+      LLM_MODEL: ${LLM_MODEL:-llama-3.3-70b-versatile}
     volumes:
       - mosquitto_data:/mosquitto/data
     restart: "no"

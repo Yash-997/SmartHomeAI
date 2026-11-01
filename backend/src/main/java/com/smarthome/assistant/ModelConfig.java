@@ -15,9 +15,9 @@ public class ModelConfig {
 	LlmClient llmClient(AssistantProperties props, ObjectMapper mapper) {
 		String provider = props.llm().provider() == null ? "none" : props.llm().provider().trim().toLowerCase(Locale.ROOT);
 		return switch (provider) {
-			case "openai", "anthropic" -> new HttpLlmClient(props.llm(), mapper);
+			case "openai", "anthropic", "groq" -> new HttpLlmClient(props.llm(), mapper);
 			case "", "none" -> new NoLlmClient("No language model provider is set (LLM_PROVIDER).");
-			default -> new NoLlmClient("Unknown LLM_PROVIDER '" + provider.replaceAll("[^a-z0-9_-]", "?") + "' (use openai or anthropic).");
+			default -> new NoLlmClient("Unknown LLM_PROVIDER '" + provider.replaceAll("[^a-z0-9_-]", "?") + "' (use openai, anthropic or groq).");
 		};
 	}
 

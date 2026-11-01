@@ -1,9 +1,11 @@
 import { useAuth } from '../auth'
+import GasAlertsPanel from '../components/GasAlertsPanel'
 import HealthCard from '../components/HealthCard'
 import OverviewStrip from '../components/OverviewStrip'
 import Header from '../components/Header'
 import RecommendationsPanel from '../components/RecommendationsPanel'
 import SecurityPanel from '../components/SecurityPanel'
+import SensorReadingsPanel from '../components/SensorReadingsPanel'
 import SystemStatusPanel from '../components/SystemStatusPanel'
 import TwinPanel from '../components/TwinPanel'
 
@@ -28,6 +30,10 @@ export default function Dashboard() {
         <OverviewStrip />
 
         <SystemStatusPanel />
+
+        <SensorReadingsPanel />
+
+        <GasAlertsPanel />
 
         <div className="grid gap-6 lg:grid-cols-2">
           <SecurityPanel />

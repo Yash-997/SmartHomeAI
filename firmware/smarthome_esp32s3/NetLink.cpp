@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include <esp_mac.h>
 #include <esp_random.h>
+#include <esp_wifi.h>
 #include <time.h>
 
 #include "CommandParser.h"
@@ -54,14 +55,22 @@ enum class WifiState { Idle, Connecting, Connected, Waiting };
 static WifiState wifiState = WifiState::Idle;
 static uint32_t wifiStateSince = 0, wifiWaitMs = 0;
 
+// Set by a planned radio pause (gas sample, serial gas test): the next reconnect is routine, so it is quiet on the
+// console and does not trigger an extra telemetry report. The access point's channel is remembered to rejoin fast.
+static bool quietWifi = false, quietMqtt = false;
+static uint32_t lastRadioStartMs = 0;   // millis() of the last Wi-Fi radio start (for the PIR diagnostics)
+static bool haveApHint = false;
+static uint8_t apChannel = 0;
+
 static void maintainWifi() {
   const uint32_t now = millis();
   switch (wifiState) {
     case WifiState::Idle:
-      Serial.printf("[net] Wi-Fi: connecting to \"%s\"\n", WIFI_SSID);
+      if (!quietWifi) Serial.printf("[net] Wi-Fi: connecting to \"%s\"\n", WIFI_SSID);
       WiFi.mode(WIFI_STA);
       WiFi.setAutoReconnect(false);  // we do our own back-off
       WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+      lastRadioStartMs = millis();
       wifiState = WifiState::Connecting;
       wifiStateSince = now;
       break;
@@ -70,8 +79,13 @@ static void maintainWifi() {
       if (WiFi.status() == WL_CONNECTED) {
         wifiState = WifiState::Connected;
         wifiBackoff.reset();
-        Serial.printf("[net] Wi-Fi connected, IP %s\n", WiFi.localIP().toString().c_str());
+        apChannel = (uint8_t)WiFi.channel();
+        haveApHint = true;
+        if (!quietWifi) Serial.printf("[net] Wi-Fi connected, IP %s\n", WiFi.localIP().toString().c_str());
+        quietWifi = false;
       } else if (now - wifiStateSince > WIFI_CONNECT_TIMEOUT_MS) {
+        haveApHint = false;   // the access point may have changed: scan normally next time
+        quietWifi = quietMqtt = false;
         WiFi.disconnect(true);
         wifiWaitMs = wifiBackoff.nextDelay(esp_random());
         Serial.printf("[net] Wi-Fi connect failed; retrying in %lu ms (sensors keep running locally)\n", (unsigned long)wifiWaitMs);
@@ -172,9 +186,15 @@ static void printStatus() {
   Serial.printf("[status] paired=%s  wifi=%s  mqtt=%s  time=%s\n", credential.length() ? "yes" : "NO",
                 wifiUp() ? "up" : "down", mqtt.connected() ? "connected" : "disconnected", timeIsSet() ? "synced" : "not set");
   Snapshot s = sensorsSnapshot();
-  Serial.printf("[status] temp=%s hum=%s motion=%d gasRaw=%d%s gasWarning=%d\n",
+  Serial.printf("[status] temp=%s hum=%s gasRaw=%s%s%s gasWarning=%d (MQ-2 on GPIO%u, %s)\n",
                 s.tempValid ? String(s.temperatureC, 1).c_str() : "n/a", s.humValid ? String(s.humidityPct, 1).c_str() : "n/a",
-                s.motionNow, s.gasRaw, s.gasWarmingUp ? " (warming up)" : "", s.gasWarning);
+                s.gasValid ? String(s.gasRaw).c_str() : "n/a", s.gasWarmingUp ? " (warming up)" : "",
+                s.gasStuckZero ? " (STUCK AT 0: check AO wiring)" : "", s.gasWarning, (unsigned)PIN_MQ2,
+                MQ2_ON_ADC2 ? "ADC2: sampled during short Wi-Fi pauses" : "ADC1");
+  Serial.printf("[status] DHT22 reads ok=%lu failed=%lu last=%s\n", (unsigned long)s.dhtOk, (unsigned long)s.dhtFail,
+                dhtResultName(s.dhtLast));
+  Serial.printf("[status] motion=%d pirPin=%s%s%s\n", s.motionNow, s.pirRaw ? "HIGH" : "LOW",
+                s.pirWarmingUp ? " (PIR warming up)" : "", s.pirStuckHigh ? " (PIR output stuck HIGH)" : "");
 }
 
 static void printOutputs() {
@@ -188,7 +208,16 @@ static void printHelp() {
   Serial.println("  <pairing code>   e.g. ABCD-2345 : pair this device (code from the web app: Devices > Add device)");
   Serial.println("  status           show state");
   Serial.println("  reset            forget the stored credential (use after you disowned the device)");
+  Serial.println("  gas              60 s of REAL MQ-2 readings, 4 per second (Wi-Fi paused meanwhile)");
+  Serial.println("  ledtest          SIMULATED high then low gas reading: the red LED must turn on, then off");
+  Serial.println("  pir              10 min log of the PIR pin (type again to stop)");
+  Serial.println("  pirdebug         turn the once-a-second [PIR DEBUG] line on/off");
 }
+
+static void runGasTest();
+static void runLedTest();
+static void togglePirTest();
+static void togglePirDebug();
 
 static void handleLine(String line) {
   line.trim();
@@ -198,6 +227,10 @@ static void handleLine(String line) {
 
   if (lower == "status") { printStatus(); printOutputs(); return; }
   if (lower == "help" || lower == "?") { printHelp(); return; }
+  if (lower == "gas") { runGasTest(); return; }
+  if (lower == "ledtest") { runLedTest(); return; }
+  if (lower == "pir") { togglePirTest(); return; }
+  if (lower == "pirdebug") { togglePirDebug(); return; }
   if (lower == "reset") {
     prefs.remove("cred");
     credential = "";
@@ -326,18 +359,27 @@ static void connectMqtt() {
 
   // Last Will: if we vanish, the broker publishes this for us (retained so late subscribers see it).
   const char* will = "{\"state\":\"offline\"}";
-  Serial.printf("[net] MQTT: connecting to %s:%d as %s\n", MQTT_HOST, MQTT_BROKER_PORT, deviceId);
-  bool ok = mqtt.connect(deviceId, deviceId, credential.c_str(), statusTopic, 1, true, will, true);
+  // cleanSession=false: the broker keeps our subscription and holds QoS 1 commands while we are briefly away (gas
+  // sampling pauses). Stale commands are still refused: every command carries an expiry.
+  if (!quietMqtt) Serial.printf("[net] MQTT: connecting to %s:%d as %s\n", MQTT_HOST, MQTT_BROKER_PORT, deviceId);
+  bool ok = mqtt.connect(deviceId, deviceId, credential.c_str(), statusTopic, 1, true, will, false);
 
   if (ok) {
     mqttBackoff.reset();
     authFailures = 0;
     mqtt.publish(statusTopic, "{\"state\":\"online\"}", true);
-    needFirstPublish = true;
-    stateDirty = true;
-    stateDueMs = 0;
+    if (quietMqtt) {
+      // Routine rejoin after a gas sample: report at once only while the gas is high, so an incident is confirmed fast.
+      const Snapshot s = sensorsSnapshot();
+      needFirstPublish = s.gasWarning || (s.gasValid && s.gasRaw >= GAS_CLEAR_RAW);
+    } else {
+      needFirstPublish = true;
+      stateDirty = true;
+      stateDueMs = 0;
+    }
     if (!mqtt.subscribe(commandsTopic, 1)) note("could not subscribe to the command topic");
-    note("MQTT connected; announced online; listening for commands.");
+    if (!quietMqtt) note("MQTT connected; announced online; listening for commands.");
+    quietMqtt = false;
     return;
   }
 
@@ -382,12 +424,228 @@ static void publishTelemetry() {
 // ---------------------------------------------------------------------------------------------------------------------
 // The task
 // ---------------------------------------------------------------------------------------------------------------------
+/** Console-only fault hints (once a minute / once per stuck period). Work with no network. */
+static void warnIfSensorStuck() {
+  static uint32_t lastGasWarn = 0, lastPirWarn = 0;
+  const Snapshot s = sensorsSnapshot();
+  if (s.gasStuckZero && (!lastGasWarn || millis() - lastGasWarn >= 60000)) {
+    lastGasWarn = millis();
+    Serial.printf("[gas] MQ-2 reads 0 continuously. Check that its AO pin reaches GPIO%u and the module has power.\n",
+                  (unsigned)PIN_MQ2);
+  }
+  if (s.pirStuckHigh && (!lastPirWarn || millis() - lastPirWarn >= PIR_STUCK_HIGH_MS)) {
+    lastPirWarn = millis();
+    Serial.println("[pir] PIR output has been HIGH without a break for 10+ minutes. Likely causes: module power (HC-SR501 "
+                   "needs 5 V), its time/sensitivity knobs at maximum, or a heat source/draught in view.");
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Gas sampling with ADC2 (see config.h). ADC2 cannot be read while the Wi-Fi radio runs, so every GAS_PAUSE_INTERVAL_MS
+// the radio is stopped, one MQ-2 sample is taken by the loop task, and the radio restarts and rejoins. MQTT is closed
+// cleanly first (no Last Will, the broker keeps the session). When Wi-Fi is down anyway, the loop task samples freely.
+// ---------------------------------------------------------------------------------------------------------------------
+static uint32_t lastGasPauseMs = 0;
+
+/** Stops only the radio (esp_wifi_stop releases ADC2). The Wi-Fi driver, network interface and settings stay as they
+ *  are. Returns false if the radio was not running. */
+static bool pauseRadio() {
+  if (wifiState != WifiState::Connected && wifiState != WifiState::Connecting) return false;
+  if (mqtt.connected()) mqtt.disconnect();   // clean: no Last Will, the broker keeps the session
+  esp_wifi_stop();
+  return true;
+}
+
+/** Restarts the radio and rejoins the same network (on the remembered channel, so no full scan). If that has not worked
+ *  within WIFI_CONNECT_TIMEOUT_MS, maintainWifi() falls back to a full Wi-Fi restart with back-off. */
+static void resumeRadio() {
+  wifi_config_t cfg;
+  if (haveApHint && esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK) {
+    cfg.sta.channel = apChannel;
+    esp_wifi_set_config(WIFI_IF_STA, &cfg);
+  }
+  esp_wifi_start();
+  esp_wifi_connect();
+  lastRadioStartMs = millis();
+  quietWifi = quietMqtt = true;
+  wifiState = WifiState::Connecting;
+  wifiStateSince = millis();
+}
+
+static void maybeGasPause() {
+  if (!MQ2_ON_ADC2 || wifiState != WifiState::Connected) return;
+  const uint32_t now = millis();
+  if (now < MQ2_WARMUP_MS) return;   // warm-up samples are not used; let the device come up undisturbed
+  const Snapshot s = sensorsSnapshot();
+  const uint32_t interval = gasPauseInterval(s.gasRaw, s.gasValid, s.gasWarning, GAS_CLEAR_RAW, GAS_PAUSE_INTERVAL_MS,
+                                             GAS_PAUSE_INTERVAL_FAST_MS);
+  if (lastGasPauseMs && now - lastGasPauseMs < interval) return;
+  lastGasPauseMs = now;
+
+  if (!pauseRadio()) return;
+  vTaskDelay(pdMS_TO_TICKS(MQ2_SETTLE_US / 1000 + 1));   // let ADC2 settle after the radio releases it
+  sensorsRequestGasSample();
+  const uint32_t t0 = millis();
+  while (sensorsSnapshot().gasSampleSeq == s.gasSampleSeq && millis() - t0 < GAS_PAUSE_MAX_MS) vTaskDelay(pdMS_TO_TICKS(5));
+  if (sensorsSnapshot().gasSampleSeq == s.gasSampleSeq) note("[gas] no MQ-2 sample during the radio pause");
+  resumeRadio();
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Serial-console self-tests (USB only). "gas" and "ledtest" pause the network task while they run; "pir" does not.
+// ---------------------------------------------------------------------------------------------------------------------
+/** True if a key was pressed (the key is consumed), so a running test can be stopped. */
+static bool keyPressed() {
+  bool any = false;
+  while (Serial.available()) { Serial.read(); any = true; }
+  return any;
+}
+
+static void runGasTest() {
+  Serial.printf("[gastest] REAL readings from the MQ-2 on GPIO%u for %lu s, 4 per second. Press Enter to stop early.\n",
+                (unsigned)PIN_MQ2, (unsigned long)(GASTEST_MS / 1000));
+  Serial.printf("[gastest] Warning on at >= %d (2 readings in a row), off below %d. Telemetry pauses meanwhile.\n",
+                GAS_WARN_RAW, GAS_CLEAR_RAW);
+  const bool paused = MQ2_ON_ADC2 && pauseRadio();   // ADC2 can only be read with the radio off
+  if (MQ2_ON_ADC2 && paused) Serial.println("[gastest] Wi-Fi radio stopped so the ADC can be read.");
+  keyPressed();
+  const uint32_t t0 = millis();
+  int peak = -1, low = 5000;
+  uint32_t lastSeq = sensorsSnapshot().gasSampleSeq;
+  while (millis() - t0 < GASTEST_MS && !keyPressed()) {
+    const Snapshot s = sensorsSnapshot();
+    if (s.gasSampleSeq != lastSeq) {
+      lastSeq = s.gasSampleSeq;
+      if (s.gasRaw > peak) peak = s.gasRaw;
+      if (s.gasRaw < low) low = s.gasRaw;
+      Serial.printf("[gastest] %5.2fs raw=%4d (burst %d-%d)%s warning=%s redLED=%s\n", (millis() - t0) / 1000.0, s.gasRaw,
+                    s.gasBurstMin, s.gasBurstMax, s.gasWarmingUp ? " (warming up: not used for the warning)" : "",
+                    s.gasWarning ? "ON" : "off", s.gasLedOn ? "ON" : "off");
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  if (peak < 0) Serial.println("[gastest] No readings could be taken (ADC unavailable).");
+  else Serial.printf("[gastest] Done. Lowest %d, highest %d (alert level %d).\n", low, peak, GAS_WARN_RAW);
+  if (paused) resumeRadio();
+}
+
+static void runLedTest() {
+  Serial.printf("[ledtest] SIMULATED readings (not from the sensor, never sent as telemetry): %d for %lu s, then %d for %lu s.\n",
+                LEDTEST_HIGH_RAW, (unsigned long)(LEDTEST_HIGH_MS / 1000), LEDTEST_LOW_RAW, (unsigned long)(LEDTEST_LOW_MS / 1000));
+  Serial.println("[ledtest] Expected: red LED (GPIO13) ON within about 0.5 s, then OFF in the second half.");
+  sensorsStartLedTest();
+  vTaskDelay(pdMS_TO_TICKS(50));
+  const uint32_t t0 = millis();
+  uint32_t lastPrint = 0;
+  bool litWhileHigh = false, litAtEnd = false;
+  while (sensorsSnapshot().gasLedTest || millis() - t0 < 200) {
+    const Snapshot s = sensorsSnapshot();
+    const uint32_t el = millis() - t0;
+    if (el < LEDTEST_HIGH_MS && s.gasLedOn) litWhileHigh = true;
+    litAtEnd = s.gasLedOn;
+    if (el - lastPrint >= 500 || lastPrint == 0) {
+      lastPrint = el ? el : 1;
+      Serial.printf("[ledtest] %4.1fs SIMULATED gas=%d warning=%s redLED=%s\n", el / 1000.0, s.gasSimRaw,
+                    s.gasWarning ? "ON" : "off", s.gasLedOn ? "ON" : "off");
+    }
+    if (mqtt.connected()) { mqtt.loop(); maybePublishState(); }   // the dashboard sees the real LED state
+    if (el > LEDTEST_HIGH_MS + LEDTEST_LOW_MS + 2000) break;
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  const Snapshot end = sensorsSnapshot();
+  litAtEnd = end.gasLedOn;
+  Serial.printf("[ledtest] %s: LED %s during the high phase, %s afterwards.%s\n", litWhileHigh && !litAtEnd ? "PASS" : "FAIL",
+                litWhileHigh ? "lit" : "did NOT light", litAtEnd ? "still ON" : "off",
+                end.gasMode == LedMode::On ? " (note: gas LED is forced ON from the dashboard; set it to Auto)" : "");
+}
+
+// [PIR DEBUG] once a second: every stage from GPIO5 to GPIO12, so a stuck input can be told apart from a software or
+// remote-command cause. Also counts PIR triggers that come right after a Wi-Fi radio start (radio bursts are a known
+// cause of false PIR triggers).
+static bool pirDebugOn = PIR_DEBUG_DEFAULT;
+static uint32_t pirDebugLastMs = 0, pirDebugSeenRises = 0, pirRisesNearRadio = 0;
+
+static void togglePirDebug() {
+  pirDebugOn = !pirDebugOn;
+  Serial.printf("[PIR DEBUG] %s\n", pirDebugOn ? "on" : "off");
+}
+
+static void servicePirDebug() {
+  const Snapshot s = sensorsSnapshot();
+  if (s.pirRises != pirDebugSeenRises) {
+    pirDebugSeenRises = s.pirRises;
+    if (lastRadioStartMs && s.pirLastRiseMs >= lastRadioStartMs && s.pirLastRiseMs - lastRadioStartMs < PIR_RADIO_WINDOW_MS) {
+      pirRisesNearRadio++;
+    }
+  }
+  const uint32_t now = millis();
+  if (!pirDebugOn || now - pirDebugLastMs < PIR_DEBUG_INTERVAL_MS) return;
+  pirDebugLastMs = now;
+  Serial.printf("[PIR DEBUG] GPIO5=%s motion=%s stable=%s candidate=%s warmup=%s rawHighFor=%.1fs rises=%lu "
+                "(%lu within %.0fs of a Wi-Fi start) lastRise=%s GPIO12=%s pirLedMode=%s%s\n",
+                s.pirRaw ? "HIGH" : "LOW", s.motionNow ? "TRUE" : "FALSE", s.pirStable ? "HIGH" : "LOW",
+                s.pirCandidate ? "HIGH" : "LOW", s.pirWarmingUp ? "yes" : "no", s.pirRawHighForMs / 1000.0,
+                (unsigned long)s.pirRises, (unsigned long)pirRisesNearRadio, PIR_RADIO_WINDOW_MS / 1000.0,
+                s.pirLastRiseMs ? (String((now - s.pirLastRiseMs) / 1000.0, 1) + "s ago").c_str() : "never",
+                s.pirLedPinHigh ? "HIGH" : "LOW", s.pirMode == LedMode::On ? "ON" : s.pirMode == LedMode::Off ? "OFF" : "AUTO",
+                s.pirMode == LedMode::On ? " (forced by a remote command, e.g. Security Away 'light on motion')" : "");
+  if (s.pirStuckHigh) Serial.println("[PIR DEBUG] WARNING: GPIO5 has been HIGH without a break for 10+ minutes.");
+}
+
+static bool pirTestOn = false, pirTestLastRaw = false;
+static uint32_t pirTestStart = 0, pirTestNextSummary = 0, pirTestRises0 = 0, pirTestHigh0 = 0;
+
+static void togglePirTest() {
+  const Snapshot s = sensorsSnapshot();
+  if (pirTestOn) {
+    pirTestOn = false;
+    Serial.println("[pirtest] stopped.");
+    return;
+  }
+  pirTestOn = true;
+  pirTestStart = millis();
+  pirTestNextSummary = 60000;
+  pirTestRises0 = s.pirRises;
+  pirTestHigh0 = s.pirHighMs;
+  pirTestLastRaw = s.pirRaw;
+  Serial.printf("[pirtest] Logging the PIR pin (GPIO%u) for %lu min; type 'pir' again to stop. Stay out of its view.\n",
+                (unsigned)PIN_PIR, (unsigned long)(PIRTEST_MS / 60000));
+  Serial.printf("[pirtest] now %s%s\n", s.pirRaw ? "HIGH" : "LOW", s.pirWarmingUp ? " (PIR still settling after power-on)" : "");
+}
+
+static void servicePirTest() {
+  if (!pirTestOn) return;
+  const Snapshot s = sensorsSnapshot();
+  const uint32_t el = millis() - pirTestStart;
+  if (s.pirRaw != pirTestLastRaw) {
+    pirTestLastRaw = s.pirRaw;
+    Serial.printf("[pirtest] %7.2fs pin %s  (motion=%d)\n", el / 1000.0, s.pirRaw ? "HIGH" : "LOW", s.motionNow);
+  }
+  const bool done = el >= PIRTEST_MS;
+  if (el >= pirTestNextSummary || done) {
+    pirTestNextSummary += 60000;
+    const uint32_t high = s.pirHighMs - pirTestHigh0;
+    Serial.printf("[pirtest] %lu s: pin HIGH %lu%% of the time, %lu trigger(s); now %s\n", (unsigned long)(el / 1000),
+                  (unsigned long)(el ? (uint64_t)high * 100 / el : 0), (unsigned long)(s.pirRises - pirTestRises0),
+                  s.pirRaw ? "HIGH" : "LOW");
+  }
+  if (done) {
+    pirTestOn = false;
+    Serial.println("[pirtest] finished.");
+  }
+}
+
 static void networkTask(void*) {
   uint32_t lastReminder = 0;
+  bool publishedGasWarning = false;
   for (;;) {
     pollSerial();
     maintainWifi();
     maintainTime();
+    warnIfSensorStuck();
+    servicePirTest();
+    servicePirDebug();
+    maybeGasPause();
 
     if (credential.isEmpty()) {
       if (wifiUp() && millis() - lastReminder > 30000) {
@@ -398,8 +656,12 @@ static void networkTask(void*) {
       connectMqtt();
       if (mqtt.connected()) {
         mqtt.loop();
-        if (needFirstPublish || millis() - lastPublishMs >= PUBLISH_INTERVAL_MS) {
+        // A change of the local gas warning is published at once, so the backend's alert does not wait for the next
+        // regular report.
+        const bool gasWarningNow = sensorsSnapshot().gasWarning;
+        if (needFirstPublish || gasWarningNow != publishedGasWarning || millis() - lastPublishMs >= PUBLISH_INTERVAL_MS) {
           needFirstPublish = false;
+          publishedGasWarning = gasWarningNow;
           lastPublishMs = millis();
           publishTelemetry();
           stateDirty = true;   // refresh the reported state together with telemetry
