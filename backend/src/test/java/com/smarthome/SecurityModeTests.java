@@ -287,6 +287,89 @@ class SecurityModeTests extends IntelTestBase {
 		assertFalse(json(getAs(t, "/api/security/settings")).get("pirLedForcedBySecurity").asBoolean());
 	}
 
+	// ---- one LED command per motion episode (never a stream of renewals) ----------------------
+
+	/** Moves this device's motion history and the user's last mode change back in time (test database only). */
+	private void ageHistory(Paired p, int seconds) {
+		jdbc.update("update security_events set created_at = DATEADD('SECOND', ?, created_at) where device_uuid = ?", -seconds, p.uuid());
+		jdbc.update("update security_settings set mode_changed_at = DATEADD('SECOND', ?, mode_changed_at) where owner_user_id = ?", -seconds,
+				p.userId());
+	}
+
+	/** The device acknowledges everything still open, as a real one does within milliseconds. Without it, the command
+	 *  service's double-send guard hands back the still-open command instead of creating a new one. */
+	private void deviceAcksAll(Paired p) {
+		commands.findByDeviceUuidOrderByCreatedAtDesc(p.uuid(), org.springframework.data.domain.PageRequest.of(0, 200)).stream()
+				.filter(c -> c.getStatus() == com.smarthome.command.CommandStatus.SENT || c.getStatus() == com.smarthome.command.CommandStatus.PENDING)
+				.forEach(c -> ack(p, c.getId(), "applied"));
+	}
+
+	private long securityLedOns(Paired p) {
+		return commands.findByDeviceUuidOrderByCreatedAtDesc(p.uuid(), org.springframework.data.domain.PageRequest.of(0, 200)).stream()
+				.filter(c -> "set_pir_led".equals(c.getAction()) && "on".equals(c.getValue()) && c.getOrigin() != null
+						&& c.getOrigin().startsWith("security:"))
+				.count();
+	}
+
+	@Test
+	void continuousMotionSendsTheLedCommandOnceNotWithEveryAlert() throws Exception {
+		String t = newUserToken();
+		Paired p = onlineNamed(t, "Busy hall");
+		putAs(t, "/api/security/config", ARMED_WITH_LED).andExpect(status().isOk());
+		setMode(t, "AWAY");
+
+		motion(p);                                                // the episode starts: one command
+		for (int i = 0; i < 10; i++) {                            // 5 more minutes of motion, an alert every 30 s
+			deviceAcksAll(p);                                     // acked, so a resend would not be folded into it
+			ageHistory(p, 30);
+			motion(p);
+		}
+
+		assertEquals(11, countKind(t, "MOTION_ALERT"), "monitoring is unchanged: every alert is still recorded");
+		assertEquals(1, securityLedOns(p), "but the LED was told 'on' once, so the device's 2-minute timer is never renewed");
+		assertEquals(1, countKind(t, "ACTION_TAKEN"));
+	}
+
+	@Test
+	void aNewMotionEpisodeAfterAQuietSpellGetsOneNewCommand() throws Exception {
+		String t = newUserToken();
+		Paired p = onlineNamed(t, "Quiet hall");
+		putAs(t, "/api/security/config", ARMED_WITH_LED).andExpect(status().isOk());
+		setMode(t, "AWAY");
+		motion(p);
+		deviceAcksAll(p);
+		ageHistory(p, 30);
+		motion(p);                                                // same episode
+		assertEquals(1, securityLedOns(p));
+
+		deviceAcksAll(p);
+		ageHistory(p, 200);                                       // quiet for longer than the episode gap (150 s)
+		motion(p);                                                // new episode
+		deviceAcksAll(p);
+		ageHistory(p, 30);
+		motion(p);                                                // same (second) episode
+
+		assertEquals(2, securityLedOns(p), "one command per episode");
+		assertEquals(4, countKind(t, "MOTION_ALERT"));
+	}
+
+	@Test
+	void switchingToAnotherArmedModeStartsANewEpisode() throws Exception {
+		String t = newUserToken();
+		Paired p = onlineNamed(t, "Mode switch");
+		putAs(t, "/api/security/config",
+				"{\"away\":{\"motionAlerts\":true,\"cooldownSeconds\":10,\"lightOnMotion\":true},\"night\":{\"motionAlerts\":true,\"cooldownSeconds\":10,\"lightOnMotion\":true}}")
+				.andExpect(status().isOk());
+		setMode(t, "AWAY");
+		motion(p);
+		deviceAcksAll(p);
+		ageHistory(p, 30);
+		setMode(t, "NIGHT");                                     // the earlier alert belongs to the Away episode
+		motion(p);
+
+		assertEquals(2, securityLedOns(p));
+	}
+
 	@Test
 	void aPirLedTheOwnerChangedAfterwardsIsNotOverwrittenWhenTheModeEnds() throws Exception {
 		String t = newUserToken();

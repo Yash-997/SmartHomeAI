@@ -10,12 +10,14 @@
 
 static GasWarning gasWarning(GAS_WARN_RAW, GAS_CLEAR_RAW, GAS_CONFIRM_SAMPLES);
 static MotionFilter motion(PIR_DEBOUNCE_MS, PIR_HOLD_MS, PIR_WARMUP_MS);
+static HoldTimer pirLedHold(PIR_LED_HOLD_MS);
 
 // Shared with the network task; guarded by `lock`.
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static Snapshot shared;
 static LedMode pirMode = LedMode::Auto, gasMode = LedMode::Auto;   // remote overrides (also under `lock`)
 static uint32_t pirModeSince = 0, gasModeSince = 0;
+static bool pirAutoLit = false;   // the automatic PIR LED timer is lighting the LED (also under `lock`)
 static volatile bool gasSampleRequested = false;
 static volatile bool ledTestRequested = false;
 
@@ -144,11 +146,11 @@ void sensorsRequestGasSample() { gasSampleRequested = true; }
 
 void sensorsStartLedTest() { ledTestRequested = true; }
 
-void sensorsSetPirLedMode(LedMode mode) {
+RemotePirResult sensorsSetPirLedMode(LedMode mode) {
   portENTER_CRITICAL(&lock);
-  pirMode = mode;
-  pirModeSince = millis();
+  const RemotePirResult r = applyRemotePirMode(pirMode, pirModeSince, mode, pirAutoLit, millis());
   portEXIT_CRITICAL(&lock);
+  return r;
 }
 
 void sensorsSetGasLedMode(LedMode mode) {
@@ -165,7 +167,7 @@ void sensorsUpdate() {
   // --- Remote overrides quietly expire back to automatic ---
   LedMode pirM, gasM;
   portENTER_CRITICAL(&lock);
-  if (pirMode != LedMode::Auto && now - pirModeSince > OVERRIDE_MAX_MS) pirMode = LedMode::Auto;
+  pirMode = expireLedMode(pirMode, pirModeSince, now, PIR_LED_REMOTE_ON_MS, OVERRIDE_MAX_MS);
   if (gasMode != LedMode::Auto && now - gasModeSince > OVERRIDE_MAX_MS) gasMode = LedMode::Auto;
   pirM = pirMode;
   gasM = gasMode;
@@ -278,7 +280,8 @@ void sensorsUpdate() {
 
   // --- LEDs: driven every pass from the pure functions in Logic.h. The gas LED is always on while a gas warning is
   //     active, whatever the remote mode (see gasLedOutput). ---
-  const bool pirLed = pirLedOutput(pirM, motionNow);
+  // PIR LED timer: on while motion is detected, off exactly PIR_LED_HOLD_MS after it stops, restarted by new motion.
+  const bool pirLed = pirLedOutput(pirM, pirLedHold.update(motion.detecting(now), now));
   const bool gasLed = gasLedOutput(gasM, warningLatched);
   digitalWrite(PIN_PIR_LED, pirLed ? HIGH : LOW);
   digitalWrite(PIN_MQ2_LED, gasLed ? HIGH : LOW);
@@ -296,6 +299,8 @@ void sensorsUpdate() {
   shared.pirMode = pirM;
   shared.pirLedOn = pirLed;
   shared.pirLedPinHigh = pirLedPin;
+  shared.pirLedHoldLeftMs = pirLedHold.remaining(now);
+  pirAutoLit = pirLedHold.on();
   shared.dhtOk = dhtOk;
   shared.dhtFail = dhtFail;
   shared.dhtLast = dhtLast;

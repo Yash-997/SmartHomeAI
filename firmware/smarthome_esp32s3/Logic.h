@@ -236,6 +236,9 @@ class MotionFilter {
   bool warmingUp(uint32_t nowMs) const { return started_ && nowMs - start_ < warmup_; }
   /** How long the debounced output has been HIGH without a break (0 when LOW). */
   uint32_t highFor(uint32_t nowMs) const { return stable_ ? nowMs - highSince_ : 0; }
+  /** The PIR is detecting motion right now: debounced output HIGH and not warming up. Unlike update()'s result it has
+   *  no hold, so it marks the exact moment motion starts and stops (used for the PIR LED's 2-minute timer). */
+  bool detecting(uint32_t nowMs) const { return stable_ && !warmingUp(nowMs); }
   /** Debounced pin level (diagnostics). */
   bool stable() const { return stable_; }
   /** The level waiting to become stable (diagnostics): differs from stable() while a change is being debounced. */
@@ -253,8 +256,9 @@ class MotionFilter {
 
 // ---------------------------------------------------------------------------------------------------------------------
 // LED modes.
-//   Auto = the local logic decides (PIR LED follows motion; gas LED shows the gas warning).
-//   On   = forced on.   Off = forced off (PIR LED only).
+//   Auto = the local logic decides (PIR LED: on while motion is detected and for 2 minutes after it stops; gas LED
+//          shows the gas warning).
+//   On   = forced on (PIR LED: for at most PIR_LED_REMOTE_ON_MS, then Auto).   Off = forced off (PIR LED only).
 // SAFETY: the gas warning always wins. gasLedOutput() is true whenever a gas warning is active, whatever the mode,
 // so no remote command, bug or override can hide a gas alarm.
 // ---------------------------------------------------------------------------------------------------------------------
@@ -274,6 +278,81 @@ inline bool parseLedMode(const char* s, LedMode& out) {
   if (strcmp(s, "on") == 0) { out = LedMode::On; return true; }
   if (strcmp(s, "off") == 0) { out = LedMode::Off; return true; }
   return false;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Hold timer: on while `active`, then stays on for exactly holdMs after the last moment it was active; becoming active
+// again restarts the countdown. All arithmetic is unsigned (now - then), so it is correct across the millis() rollover
+// every 49.7 days.
+// ---------------------------------------------------------------------------------------------------------------------
+class HoldTimer {
+ public:
+  explicit HoldTimer(uint32_t holdMs) : hold_(holdMs) {}
+
+  bool update(bool active, uint32_t nowMs) {
+    if (active) {
+      on_ = true;
+      lastActive_ = nowMs;
+      activeNow_ = true;
+    } else {
+      activeNow_ = false;
+      if (on_ && (uint32_t)(nowMs - lastActive_) >= hold_) on_ = false;
+    }
+    return on_;
+  }
+
+  bool on() const { return on_; }
+  /** Time left before switching off (holdMs while still active, 0 when off). */
+  uint32_t remaining(uint32_t nowMs) const {
+    if (!on_) return 0;
+    if (activeNow_) return hold_;
+    const uint32_t gone = nowMs - lastActive_;
+    return gone >= hold_ ? 0 : hold_ - gone;
+  }
+
+ private:
+  uint32_t hold_;
+  uint32_t lastActive_ = 0;
+  bool on_ = false, activeNow_ = false;
+};
+
+/** A remote LED mode returns to Auto by itself: "on" after onMaxMs, anything else after otherMaxMs (rollover-safe).
+ *  With a short onMaxMs, a stream of "on" commands (Security re-sends one per motion report) keeps the LED on only
+ *  while the commands keep coming, then it falls back to the automatic behaviour. */
+inline LedMode expireLedMode(LedMode mode, uint32_t sinceMs, uint32_t nowMs, uint32_t onMaxMs, uint32_t otherMaxMs) {
+  if (mode == LedMode::Auto) return mode;
+  const uint32_t limit = mode == LedMode::On ? onMaxMs : otherMaxMs;
+  return (uint32_t)(nowMs - sinceMs) >= limit ? LedMode::Auto : mode;
+}
+
+/** What a remote set_pir_led did. KeptAuto / NotRenewed are still acknowledged as applied, with a detail saying why
+ *  nothing changed. */
+enum class RemotePirResult { Applied, KeptAuto, NotRenewed };
+
+/**
+ * Applies a remote PIR LED mode. The automatic behaviour has priority over repeated "on" commands:
+ *  - "on" while in Auto with the LED already lit by motion (or its 2-minute timer) changes nothing: the automatic timer
+ *    stays in charge, so the LED goes off 2 minutes after the motion ends, whatever the backend keeps sending;
+ *  - "on" while an "on" override is already active does not extend it (it still ends onMaxMs after the first one).
+ * "auto" and "off" always apply.
+ */
+inline RemotePirResult applyRemotePirMode(LedMode& mode, uint32_t& sinceMs, LedMode requested, bool autoLit, uint32_t nowMs) {
+  if (requested == LedMode::On) {
+    if (mode == LedMode::On) return RemotePirResult::NotRenewed;
+    if (mode == LedMode::Auto && autoLit) return RemotePirResult::KeptAuto;
+  }
+  mode = requested;
+  sinceMs = nowMs;
+  return RemotePirResult::Applied;
+}
+
+/** Ack detail for a remote PIR LED result (no quotes or control characters: embedded in JSON as is). */
+inline const char* remotePirDetail(RemotePirResult r) {
+  switch (r) {
+    case RemotePirResult::KeptAuto: return "LED already lit by motion; automatic 2-minute timer kept";
+    case RemotePirResult::NotRenewed: return "LED already forced on; timer not renewed";
+    default: return "";
+  }
 }
 
 inline bool pirLedOutput(LedMode mode, bool motionNow) {

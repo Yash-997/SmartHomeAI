@@ -333,8 +333,12 @@ static void onMqttMessage(char* topic, uint8_t* payload, unsigned int length) {
   const char* detail = verdictDetail(check.verdict);
 
   if (check.verdict == CmdVerdict::Ok) {
-    if (check.action == CmdAction::SetPirLed) sensorsSetPirLedMode(check.mode);
-    else sensorsSetGasLedMode(check.mode);
+    if (check.action == CmdAction::SetPirLed) {
+      const RemotePirResult r = sensorsSetPirLedMode(check.mode);
+      if (r != RemotePirResult::Applied) detail = remotePirDetail(r);   // acknowledged, but the automatic LED stays in charge
+    } else {
+      sensorsSetGasLedMode(check.mode);
+    }
     strncpy(lastCommandId, cmd.id, 36);
     lastCommandId[36] = '\0';
     stateDirty = true;
@@ -582,13 +586,14 @@ static void servicePirDebug() {
   if (!pirDebugOn || now - pirDebugLastMs < PIR_DEBUG_INTERVAL_MS) return;
   pirDebugLastMs = now;
   Serial.printf("[PIR DEBUG] GPIO5=%s motion=%s stable=%s candidate=%s warmup=%s rawHighFor=%.1fs rises=%lu "
-                "(%lu within %.0fs of a Wi-Fi start) lastRise=%s GPIO12=%s pirLedMode=%s%s\n",
+                "(%lu within %.0fs of a Wi-Fi start) lastRise=%s GPIO12=%s ledTimer=%.1fs pirLedMode=%s%s\n",
                 s.pirRaw ? "HIGH" : "LOW", s.motionNow ? "TRUE" : "FALSE", s.pirStable ? "HIGH" : "LOW",
                 s.pirCandidate ? "HIGH" : "LOW", s.pirWarmingUp ? "yes" : "no", s.pirRawHighForMs / 1000.0,
                 (unsigned long)s.pirRises, (unsigned long)pirRisesNearRadio, PIR_RADIO_WINDOW_MS / 1000.0,
                 s.pirLastRiseMs ? (String((now - s.pirLastRiseMs) / 1000.0, 1) + "s ago").c_str() : "never",
-                s.pirLedPinHigh ? "HIGH" : "LOW", s.pirMode == LedMode::On ? "ON" : s.pirMode == LedMode::Off ? "OFF" : "AUTO",
-                s.pirMode == LedMode::On ? " (forced by a remote command, e.g. Security Away 'light on motion')" : "");
+                s.pirLedPinHigh ? "HIGH" : "LOW", s.pirLedHoldLeftMs / 1000.0,
+                s.pirMode == LedMode::On ? "ON" : s.pirMode == LedMode::Off ? "OFF" : "AUTO",
+                s.pirMode == LedMode::On ? " (remote command, e.g. Security Away 'light on motion'; returns to AUTO within 2 min)" : "");
   if (s.pirStuckHigh) Serial.println("[PIR DEBUG] WARNING: GPIO5 has been HIGH without a break for 10+ minutes.");
 }
 

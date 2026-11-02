@@ -54,6 +54,13 @@ public class SecurityService {
 	private static final Logger log = LoggerFactory.getLogger(SecurityService.class);
 	/** Telemetry older than this is a replay, not something happening now. */
 	private static final Duration MAX_AGE = Duration.ofMinutes(2);
+	/**
+	 * "Light on motion" sends one PIR LED command per motion episode, not one per alert. An episode lasts while motion
+	 * alerts keep coming less than this far apart; it is longer than the device's own 2-minute PIR LED timer, which keeps
+	 * the LED lit for the rest of the episode. Re-sending "on" with every alert renewed the device's override and kept the
+	 * LED on indefinitely.
+	 */
+	static final Duration LIGHT_EPISODE_GAP = Duration.ofSeconds(150);
 
 	private final SecuritySettingsRepository settingsRepo;
 	private final SecurityEventRepository eventRepo;
@@ -185,10 +192,17 @@ public class SecurityService {
 		if (eventRepo.countByDeviceUuidAndKindAndCreatedAtAfter(device.getId(), Kind.MOTION_ALERT, now.minusSeconds(cfg.cooldownSeconds())) > 0) {
 			return;                                                   // already alerted for this device very recently
 		}
+		// Same episode = an earlier alert for this device within LIGHT_EPISODE_GAP, in the current mode. Checked before this
+		// alert is saved.
+		Instant episodeStart = now.minus(LIGHT_EPISODE_GAP);
+		if (s.getModeChangedAt() != null && s.getModeChangedAt().isAfter(episodeStart)) {
+			episodeStart = s.getModeChangedAt();
+		}
+		boolean sameEpisode = eventRepo.countByDeviceUuidAndKindAndCreatedAtAfter(device.getId(), Kind.MOTION_ALERT, episodeStart) > 0;
 		String name = Text.oneLine(device.getName(), 60);
 		eventRepo.save(new SecurityEvent(owner, device.getId(), Kind.MOTION_ALERT, Severity.WARNING, mode,
 				"Motion detected by \"" + name + "\" while in " + label(mode) + " mode.", now));
-		if (cfg.lightOnMotion()) {
+		if (cfg.lightOnMotion() && !sameEpisode) {
 			lightPirLed(owner, device, name, mode, s);
 		}
 	}

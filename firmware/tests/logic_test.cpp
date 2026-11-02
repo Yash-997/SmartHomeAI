@@ -383,7 +383,213 @@ static void testDht22Decode() {
   // Worst case time with interrupts off: 3 start waits + 80 bit waits, each capped at 100 us: 8.3 ms << 300 ms watchdog.
 }
 
+// PIR LED (GPIO12), composed exactly as sensorsUpdate() does: MotionFilter -> HoldTimer(2 min) -> expireLedMode ->
+// pirLedOutput. Production settings: 150 ms debounce, 5 s motion hold, 2 min LED hold, remote "on" <= 2 min, other
+// remote modes <= 1 h.
+namespace pirled {
+const uint32_t POLL = 20, LED_HOLD = 120000, REMOTE_ON = 120000, OVERRIDE = 3600000;
+
+struct Sim {
+  MotionFilter m{150, 5000, 0};
+  HoldTimer hold{LED_HOLD};
+  LedMode mode = LedMode::Auto;
+  uint32_t since = 0;
+  bool led = false;
+  bool detecting = false;
+
+  explicit Sim(uint32_t t0) { m.start(t0); }
+  RemotePirResult command(LedMode md, uint32_t now) { return applyRemotePirMode(mode, since, md, hold.on(), now); }
+  bool step(bool raw, uint32_t now) {
+    m.update(raw, now);
+    mode = expireLedMode(mode, since, now, REMOTE_ON, OVERRIDE);
+    detecting = m.detecting(now);
+    led = pirLedOutput(mode, hold.update(detecting, now));
+    return led;
+  }
+};
+
+/** Runs raw `level` over [from, to); returns the last moment motion was detected before it stopped (0 if it did not
+ *  stop in this span). The 2 minutes count from that moment. */
+static uint32_t run(Sim& s, bool level, uint32_t from, uint32_t to) {
+  uint32_t stopped = 0, prevT = from - POLL;
+  bool was = s.detecting;
+  for (uint32_t t = from; t != to; t += POLL) {
+    s.step(level, t);
+    if (was && !s.detecting && !stopped) stopped = prevT;
+    was = s.detecting;
+    prevT = t;
+  }
+  return stopped;
+}
+
+/** Checks the LED is on until exactly LED_HOLD after `stoppedAt` and off from then on (raw stays LOW). */
+static bool offExactlyAfterHold(Sim& s, uint32_t stoppedAt, uint32_t from) {
+  bool ok = true;
+  for (uint32_t t = from; t != stoppedAt + LED_HOLD + 10000; t += POLL) {
+    const bool led = s.step(false, t);
+    const bool expected = (uint32_t)(t - stoppedAt) < LED_HOLD;
+    if (led != expected) ok = false;
+  }
+  return ok;
+}
+}  // namespace pirled
+
+static void testPirLedTimer() {
+  using namespace pirled;
+
+  {  // No motion: LED off for 10 minutes.
+    Sim s(0);
+    bool ever = false;
+    for (uint32_t t = 0; t < 600000; t += POLL) ever = s.step(false, t) || ever;
+    CHECK(!ever);
+    CHECK(s.hold.remaining(600000) == 0);
+  }
+
+  {  // Motion: LED on as soon as the motion is confirmed (debounce), not before.
+    Sim s(0);
+    run(s, false, 0, 10000);
+    CHECK(!s.step(true, 10000));
+    CHECK(!s.step(true, 10140));
+    CHECK(s.step(true, 10160));                                      // 150 ms debounce passed
+    CHECK(s.hold.remaining(10160) == LED_HOLD);                      // full 2 min queued while motion continues
+  }
+
+  {  // Motion stops: LED stays on for exactly 2 minutes, then turns off (and stays off).
+    Sim s(0);
+    run(s, false, 0, 10000);
+    run(s, true, 10000, 15000);                                      // 5 s of motion
+    const uint32_t stopped = run(s, false, 15000, 16000);            // the PIR stops detecting in here
+    CHECK(stopped > 15000 && stopped <= 15200);
+    CHECK(offExactlyAfterHold(s, stopped, 16000));
+    CHECK(!s.step(false, stopped + LED_HOLD + 600000));
+  }
+
+  {  // New motion during the 2 minutes restarts the countdown from the end of the NEW motion.
+    Sim s(0);
+    run(s, false, 0, 10000);
+    run(s, true, 10000, 12000);
+    const uint32_t first = run(s, false, 12000, 13000);
+    run(s, false, 13000, first + 90000);                             // 90 s into the countdown: still on
+    CHECK(s.led);
+    run(s, true, first + 90000, first + 91000);                      // new motion
+    const uint32_t second = run(s, false, first + 91000, first + 92000);
+    CHECK(second > first + 90000);
+    CHECK(s.step(false, first + LED_HOLD + 1000));                   // past the FIRST deadline: still on
+    CHECK(offExactlyAfterHold(s, second, first + LED_HOLD + 1020));  // off exactly 2 min after the second stop
+  }
+
+  {  // Repeated separate motion events 3 minutes apart: on and off once per event.
+    Sim s(0);
+    int ons = 0, offs = 0;
+    bool prev = false;
+    for (int i = 0; i < 5; i++) {
+      const uint32_t t = 10000 + i * 180000;
+      for (uint32_t u = (i ? t - 180000 + 3000 : 0); u < t; u += POLL) { bool v = s.step(false, u); offs += prev && !v; prev = v; }
+      for (uint32_t u = t; u < t + 3000; u += POLL) { bool v = s.step(true, u); ons += !prev && v; prev = v; }
+    }
+    for (uint32_t u = 10000 + 4 * 180000 + 3000; u < 10000 + 5 * 180000; u += POLL) { bool v = s.step(false, u); offs += prev && !v; prev = v; }
+    CHECK(ons == 5);
+    CHECK(offs == 5);
+  }
+
+  {  // millis() rollover: motion just before 2^32 ms, off exactly 2 minutes later on the other side of 0.
+    const uint32_t t0 = 0xFFFFFFFFu - 60000u + 1u;                   // 60 s before the wrap, on the 20 ms grid
+    Sim s(t0);
+    run(s, false, t0, t0 + 10000);
+    run(s, true, t0 + 10000, t0 + 12000);
+    const uint32_t stopped = run(s, false, t0 + 12000, t0 + 13000);
+    CHECK(offExactlyAfterHold(s, stopped, t0 + 13000));              // the deadline lies after the wrap
+    CHECK((uint32_t)(stopped + LED_HOLD) < stopped);                 // confirms the test really crossed the wrap
+  }
+
+  {  // The old backend behaviour: "on" every 20 s for 5 minutes of motion AND for 1 more minute after it stopped (late
+     // alerts). The automatic timer stays in charge: off exactly 2 minutes after the motion ended, never renewed.
+    Sim s(0);
+    run(s, false, 0, 10000);
+    int kept = 0, notRenewed = 0, applied = 0;
+    auto tally = [&](RemotePirResult r) {
+      kept += r == RemotePirResult::KeptAuto;
+      notRenewed += r == RemotePirResult::NotRenewed;
+      applied += r == RemotePirResult::Applied;
+    };
+    for (uint32_t t = 10000; t < 310000; t += POLL) {                // 5 minutes of motion + commands every 20 s
+      if ((t - 10000) % 20000 == 0) tally(s.command(LedMode::On, t));
+      s.step(true, t);
+    }
+    CHECK(s.led);
+    CHECK(applied <= 1);                                             // at most the first, sent before motion was confirmed
+    CHECK(kept + notRenewed + applied == 15);
+    uint32_t stopped = 0, prevT = 309980;
+    bool was = s.detecting;
+    for (uint32_t t = 310000; t < 370000; t += POLL) {               // motion over; commands keep coming for 60 s
+      if ((t - 310000) % 20000 == 0) CHECK(s.command(LedMode::On, t) == RemotePirResult::KeptAuto);
+      s.step(false, t);
+      if (was && !s.detecting && !stopped) stopped = prevT;
+      was = s.detecting;
+      prevT = t;
+    }
+    CHECK(stopped > 0);
+    CHECK(offExactlyAfterHold(s, stopped, 370000));                  // exactly 2 min after the motion ended
+    CHECK(s.mode == LedMode::Auto);
+  }
+
+  {  // The fixed backend: one "on" per motion episode. Same result, and the command never renews anything.
+    Sim s(0);
+    run(s, false, 0, 10000);
+    run(s, true, 10000, 12000);                                      // motion confirmed, LED lit automatically
+    CHECK(s.command(LedMode::On, 12000) == RemotePirResult::KeptAuto);
+    CHECK(s.mode == LedMode::Auto);
+    run(s, true, 12000, 60000);
+    const uint32_t stopped = run(s, false, 60000, 61000);
+    CHECK(offExactlyAfterHold(s, stopped, 61000));
+  }
+
+  {  // An active remote "on" is never extended by repeated "on" commands: it ends 2 minutes after the FIRST one.
+    Sim s(0);
+    run(s, false, 0, 10000);
+    CHECK(s.command(LedMode::On, 10000) == RemotePirResult::Applied);
+    for (uint32_t t = 10000; t < 10000 + REMOTE_ON; t += POLL) {
+      if ((t - 10000) % 20000 == 0 && t > 10000) CHECK(s.command(LedMode::On, t) == RemotePirResult::NotRenewed);
+      CHECK(s.step(false, t));
+    }
+    CHECK(!s.step(false, 10000 + REMOTE_ON));                        // off at exactly 2 min after the first command
+    CHECK(s.mode == LedMode::Auto);
+  }
+
+  {  // A single remote "on" with no motion lights the LED for at most 2 minutes, then Auto (off).
+    Sim s(0);
+    run(s, false, 0, 10000);
+    s.command(LedMode::On, 10000);
+    CHECK(s.step(false, 10000));
+    CHECK(s.step(false, 10000 + REMOTE_ON - POLL));
+    CHECK(!s.step(false, 10000 + REMOTE_ON));
+    CHECK(s.mode == LedMode::Auto);
+  }
+
+  {  // Remote "auto" hands control straight back; remote "off" is a user choice, bounded to 1 h as before.
+    Sim s(0);
+    run(s, false, 0, 10000);
+    s.command(LedMode::On, 10000);
+    s.command(LedMode::Auto, 20000);
+    CHECK(!s.step(false, 20000));
+    s.command(LedMode::Off, 30000);
+    CHECK(!s.step(true, 30000)); CHECK(!s.step(true, 30200));        // off while forced off, even with motion
+    run(s, true, 30200, 30000 + OVERRIDE);
+    CHECK(s.step(true, 30000 + OVERRIDE));                           // after 1 h: Auto again, motion lights it
+  }
+
+  {  // A continuously HIGH PIR is not hidden: the LED stays on for as long as the input stays HIGH.
+    Sim s(0);
+    run(s, false, 0, 10000);
+    run(s, true, 10000, 10200);                                      // past the 150 ms debounce
+    bool allOn = true;
+    for (uint32_t t = 10200; t < 1000000; t += POLL) allOn = s.step(true, t) && allOn;
+    CHECK(allOn);
+  }
+}
+
 int main() {
+  testPirLedTimer();
   testDht22Decode();
   testPirScenarios();
   testPayload();

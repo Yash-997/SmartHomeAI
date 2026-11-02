@@ -24,6 +24,7 @@ struct Snapshot {
   bool pirStable = false;     // MotionFilter's debounced level
   bool pirCandidate = false;  // MotionFilter's pending level (differs from pirStable while debouncing)
   bool pirLedPinHigh = false; // GPIO12 as actually driven, read back from the GPIO output register
+  uint32_t pirLedHoldLeftMs = 0;  // Auto mode: time left on the PIR LED's 2-minute timer (0 = off)
   bool gasValid = false;      // a real, recent, post-warm-up MQ-2 sample exists (otherwise nothing is published)
   int gasRaw = 0;             // raw 12-bit ADC counts (0-4095). NOT ppm.
   bool gasHaveSample = false; // at least one MQ-2 sample since boot (warm-up included)
@@ -65,6 +66,8 @@ void sensorsStartLedTest();
 
 /** Remote overrides for the indicator LEDs. They only change how the LEDs are driven; sensing and the gas warning
  *  logic are untouched. Overrides return to Auto by themselves after OVERRIDE_MAX_MS and on every reboot. */
-void sensorsSetPirLedMode(LedMode mode);
+/** A remote "on" does not override the automatic LED while motion (or its 2-minute timer) already lights it, and never
+ *  extends an active "on" (see applyRemotePirMode in Logic.h). */
+RemotePirResult sensorsSetPirLedMode(LedMode mode);
 /** Off is not accepted for the gas LED (it is treated as Auto): the gas warning must stay visible. */
 void sensorsSetGasLedMode(LedMode mode);

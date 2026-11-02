@@ -104,6 +104,12 @@ constexpr uint32_t PIR_DEBOUNCE_MS  = 150;      // a level change must be stable
 constexpr uint32_t PIR_HOLD_MS      = 5000;     // motion stays true this long after the output returns LOW
 constexpr uint32_t PIR_WARMUP_MS    = 30000;    // PIR settling time after power-on: its output is ignored meanwhile
 constexpr uint32_t PIR_STUCK_HIGH_MS = 600000;  // output HIGH this long without a break is reported on the console
+// PIR LED (GPIO12) in Auto: on while motion is detected, and for exactly this long after it stops; new motion restarts
+// the countdown. This is the LED only: the motion state sent to the backend keeps its own short PIR_HOLD_MS.
+constexpr uint32_t PIR_LED_HOLD_MS      = 120000;  // 2 minutes
+// A remote "on" for the PIR LED (e.g. Security Away "light on motion") lasts at most this long, then Auto takes over.
+// Security re-sends "on" per motion report, so the LED stays on while motion continues and goes off when it stops.
+constexpr uint32_t PIR_LED_REMOTE_ON_MS = 120000;
 constexpr bool     PIR_DEBUG_DEFAULT = true;     // print a [PIR DEBUG] line every PIR_DEBUG_INTERVAL_MS (toggle: "pirdebug")
 constexpr uint32_t PIR_DEBUG_INTERVAL_MS = 1000;
 constexpr uint32_t PIR_RADIO_WINDOW_MS = 2000;   // a PIR trigger this soon after a Wi-Fi radio start is counted separately
