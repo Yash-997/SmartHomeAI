@@ -113,6 +113,54 @@ class DigitalTwinTests extends IntelTestBase {
 	}
 
 	@Test
+	void anOnThatTheDeviceKeptInAutoBecauseMotionLitTheLedIsInSync() throws Exception {
+		String t = newUserToken();
+		Paired p = onlineNamed(t, "Kept auto");
+		ack(p, sendCommand(p, "set_pir_led", "on"), "applied", "kept auto: LED already lit by motion, local timer kept");
+		reportState(p, "auto", true, "auto", false, false);       // lit by motion, still automatic
+
+		JsonNode pir = output(twin(t, p), "set_pir_led");
+		assertEquals("on", pir.get("desired").asString(), "the request is shown as it was made");
+		assertEquals("auto", pir.get("expected").asString(), "but the device is expected to stay automatic");
+		assertEquals("IN_SYNC", pir.get("sync").asString());
+		assertTrue(pir.get("reportedLit").asBoolean());
+		assertTrue(pir.get("note").asString().contains("automatic"), pir.get("note").asString());
+	}
+
+	@Test
+	void aTemporaryOnThatEndedOnTheDeviceIsNotDrift() throws Exception {
+		String t = newUserToken();
+		Paired p = onlineNamed(t, "Timed on");
+		UUID id = sendCommand(p, "set_pir_led", "on");
+		ack(p, id, "applied");
+		reportState(p, "on", true, "auto", false, false);
+		assertEquals("IN_SYNC", output(twin(t, p), "set_pir_led").get("sync").asString());
+		assertEquals("on", output(twin(t, p), "set_pir_led").get("expected").asString());
+
+		// 3 minutes later the device's 2-minute "on" has ended and it reports auto, as designed
+		jdbc.update("update device_commands set created_at = DATEADD('SECOND', -180, created_at), completed_at = DATEADD('SECOND', -180, completed_at) where id = ?", id);
+		reportState(p, "auto", false, "auto", false, false);
+		JsonNode pir = output(twin(t, p), "set_pir_led");
+		assertEquals("auto", pir.get("expected").asString());
+		assertEquals("IN_SYNC", pir.get("sync").asString(), pir.get("note").asString());
+	}
+
+	@Test
+	void aNotRenewedOnCountsFromTheOnThatReallyStartedTheTimer() throws Exception {
+		String t = newUserToken();
+		Paired p = onlineNamed(t, "Not renewed");
+		UUID first = sendCommand(p, "set_pir_led", "on");
+		ack(p, first, "applied");
+		jdbc.update("update device_commands set created_at = DATEADD('SECOND', -150, created_at), completed_at = DATEADD('SECOND', -150, completed_at) where id = ?", first);
+		ack(p, sendCommand(p, "set_pir_led", "on"), "applied", "not renewed: LED already forced on, timer not renewed");
+		reportState(p, "auto", false, "auto", false, false);       // the first "on" (150 s ago) has ended
+
+		JsonNode pir = output(twin(t, p), "set_pir_led");
+		assertEquals("auto", pir.get("expected").asString());
+		assertEquals("IN_SYNC", pir.get("sync").asString());
+	}
+
+	@Test
 	void withoutAStateReportTheTwinSaysItCannotVerify() throws Exception {
 		String t = newUserToken();
 		Paired p = onlineNamed(t, "Silent state");

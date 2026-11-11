@@ -27,7 +27,7 @@ export default function TwinPanel() {
         <h3 id="twin-heading" className="font-semibold">Device twins</h3>
         <button type="button" onClick={reload} className="rounded-md bg-slate-700 px-3 py-1 text-xs hover:bg-slate-600">Refresh</button>
       </div>
-      <p className="mt-1 text-xs text-slate-500">What was last confirmed by each device, what it reports now, and whether they agree.</p>
+      <p className="mt-1 text-xs text-slate-500">What was last confirmed by each device, what it should be doing now (forced LED modes are temporary on the device), what it reports, and whether they agree.</p>
 
       {!data && !error && <PanelSkeleton lines={3} />}
       {error && <p className="mt-3 rounded bg-red-500/10 p-2 text-sm text-red-400" role="alert">{error}</p>}
@@ -45,13 +45,14 @@ export default function TwinPanel() {
             <p className="mt-1 text-xs text-slate-400">{t.summary}</p>
             <table className="mt-2 w-full text-left text-xs">
               <thead className="text-slate-500">
-                <tr><th className="py-1 pr-2 font-medium">Output</th><th className="pr-2 font-medium">Confirmed request</th><th className="pr-2 font-medium">Device reports</th><th className="font-medium">State</th></tr>
+                <tr><th className="py-1 pr-2 font-medium">Output</th><th className="pr-2 font-medium">Confirmed request</th><th className="pr-2 font-medium">Expected now</th><th className="pr-2 font-medium">Device reports</th><th className="font-medium">State</th></tr>
               </thead>
               <tbody>
                 {t.outputs.map((o) => (
                   <tr key={o.action} className="border-t border-slate-800 align-top">
                     <td className="py-1 pr-2">{o.label}</td>
                     <td className="pr-2">{o.desired ?? 'none'}{o.desiredBy ? <span className="text-slate-500"> by {o.desiredBy}</span> : null}{o.requested ? <span className="text-indigo-300"> (asking for {o.requested})</span> : null}</td>
+                    <td className="pr-2">{o.expected ?? '-'}</td>
                     <td className="pr-2">{o.reportedMode === null ? 'no report' : `${o.reportedMode}${o.reportedLit === null ? '' : o.reportedLit ? ', lit' : ', not lit'}`}{o.reportedStale && o.reportedMode !== null ? ' (old)' : ''}</td>
                     <td>
                       <span className={`rounded px-1.5 py-0.5 ${SYNC[o.sync].tone}`}>{SYNC[o.sync].label}</span>

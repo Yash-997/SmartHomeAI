@@ -40,6 +40,7 @@ class GasAlertTests extends AutomationTestBase {
 
 	@BeforeEach
 	void reset() {
+		alertDispatcher.awaitIdle();      // emails queued by earlier tests (e.g. Away motion) must not land in this test
 		mailer.reset();
 		alertService.resetCounters();
 	}
@@ -93,8 +94,10 @@ class GasAlertTests extends AutomationTestBase {
 		assertEquals(1, mailer.sent().size(), "one alert per incident, however long the gas stays high");
 		RecordingAlertMailer.Sent mail = mailer.sent().get(0);
 		assertEquals(ownerEmail, mail.to());
-		assertTrue(mail.subject().startsWith("EMERGENCY"));
+		assertTrue(mail.subject().startsWith("GAS/SMOKE ALERT"), mail.subject());
 		assertTrue(mail.body().contains("2800"), "the reading that confirmed the incident");
+		assertTrue(mail.html().contains("GAS/SMOKE ALERT") && mail.html().contains("2800 raw ADC (0-4095)"), "HTML part with the raw unit");
+		assertFalse(mail.html().matches("(?s).*\\d\\s*ppm.*"), "ADC values are never labelled ppm");
 
 		List<GasAlert> all = incidents(p);
 		assertEquals(1, all.size());

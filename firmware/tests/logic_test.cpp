@@ -185,11 +185,16 @@ static void testLedTestSchedule() {
   CHECK(!onAtEnd);
 }
 
-static void testGasPauseInterval() {
-  CHECK(gasPauseInterval(150, true, false, 510, 15000, 8000) == 15000);
-  CHECK(gasPauseInterval(530, true, false, 510, 15000, 8000) == 8000);    // near the threshold: sample sooner
-  CHECK(gasPauseInterval(150, true, true, 510, 15000, 8000) == 8000);     // warning on: sample sooner to see recovery
-  CHECK(gasPauseInterval(3000, false, false, 510, 15000, 8000) == 15000); // no valid sample yet
+static void testMotionStartPublish() {
+  // Only the rising edge of motion triggers an early report ...
+  CHECK(motionStartPublishDue(true, false, 1000, 0, 2000));
+  CHECK(!motionStartPublishDue(true, true, 1000, 0, 2000));       // motion continuing: the 30 s reports cover it
+  CHECK(!motionStartPublishDue(false, true, 1000, 0, 2000));      // motion ending: no early report
+  CHECK(!motionStartPublishDue(false, false, 1000, 0, 2000));
+  // ... and a flickering PIR gets at most one early report per gap.
+  CHECK(!motionStartPublishDue(true, false, 2500, 1000, 2000));
+  CHECK(motionStartPublishDue(true, false, 3000, 1000, 2000));
+  CHECK(motionStartPublishDue(true, false, 500, 0xFFFFF000u, 2000));   // millis() rollover
 }
 
 static void testMotionFilter() {
@@ -383,11 +388,11 @@ static void testDht22Decode() {
   // Worst case time with interrupts off: 3 start waits + 80 bit waits, each capped at 100 us: 8.3 ms << 300 ms watchdog.
 }
 
-// PIR LED (GPIO12), composed exactly as sensorsUpdate() does: MotionFilter -> HoldTimer(2 min) -> expireLedMode ->
-// pirLedOutput. Production settings: 150 ms debounce, 5 s motion hold, 2 min LED hold, remote "on" <= 2 min, other
+// PIR LED (GPIO12), composed exactly as sensorsUpdate() does: MotionFilter -> HoldTimer(10 s) -> expireLedMode ->
+// pirLedOutput. Production settings: 150 ms debounce, 5 s motion hold, 10 s LED hold, remote "on" <= 2 min, other
 // remote modes <= 1 h.
 namespace pirled {
-const uint32_t POLL = 20, LED_HOLD = 120000, REMOTE_ON = 120000, OVERRIDE = 3600000;
+const uint32_t POLL = 20, LED_HOLD = 10000, REMOTE_ON = 120000, OVERRIDE = 3600000;
 
 struct Sim {
   MotionFilter m{150, 5000, 0};
@@ -409,7 +414,7 @@ struct Sim {
 };
 
 /** Runs raw `level` over [from, to); returns the last moment motion was detected before it stopped (0 if it did not
- *  stop in this span). The 2 minutes count from that moment. */
+ *  stop in this span). The LED hold counts from that moment. */
 static uint32_t run(Sim& s, bool level, uint32_t from, uint32_t to) {
   uint32_t stopped = 0, prevT = from - POLL;
   bool was = s.detecting;
@@ -451,10 +456,10 @@ static void testPirLedTimer() {
     CHECK(!s.step(true, 10000));
     CHECK(!s.step(true, 10140));
     CHECK(s.step(true, 10160));                                      // 150 ms debounce passed
-    CHECK(s.hold.remaining(10160) == LED_HOLD);                      // full 2 min queued while motion continues
+    CHECK(s.hold.remaining(10160) == LED_HOLD);                      // full hold queued while motion continues
   }
 
-  {  // Motion stops: LED stays on for exactly 2 minutes, then turns off (and stays off).
+  {  // Motion stops: LED stays on for exactly 10 s, then turns off (and stays off).
     Sim s(0);
     run(s, false, 0, 10000);
     run(s, true, 10000, 15000);                                      // 5 s of motion
@@ -464,18 +469,18 @@ static void testPirLedTimer() {
     CHECK(!s.step(false, stopped + LED_HOLD + 600000));
   }
 
-  {  // New motion during the 2 minutes restarts the countdown from the end of the NEW motion.
+  {  // New motion during the 10 s hold restarts the countdown from the end of the NEW motion.
     Sim s(0);
     run(s, false, 0, 10000);
     run(s, true, 10000, 12000);
     const uint32_t first = run(s, false, 12000, 13000);
-    run(s, false, 13000, first + 90000);                             // 90 s into the countdown: still on
+    run(s, false, 13000, first + 7000);                              // 7 s into the countdown: still on
     CHECK(s.led);
-    run(s, true, first + 90000, first + 91000);                      // new motion
-    const uint32_t second = run(s, false, first + 91000, first + 92000);
-    CHECK(second > first + 90000);
+    run(s, true, first + 7000, first + 8000);                        // new motion
+    const uint32_t second = run(s, false, first + 8000, first + 9000);
+    CHECK(second > first + 7000);
     CHECK(s.step(false, first + LED_HOLD + 1000));                   // past the FIRST deadline: still on
-    CHECK(offExactlyAfterHold(s, second, first + LED_HOLD + 1020));  // off exactly 2 min after the second stop
+    CHECK(offExactlyAfterHold(s, second, first + LED_HOLD + 1020));  // off exactly 10 s after the second stop
   }
 
   {  // Repeated separate motion events 3 minutes apart: on and off once per event.
@@ -492,8 +497,8 @@ static void testPirLedTimer() {
     CHECK(offs == 5);
   }
 
-  {  // millis() rollover: motion just before 2^32 ms, off exactly 2 minutes later on the other side of 0.
-    const uint32_t t0 = 0xFFFFFFFFu - 60000u + 1u;                   // 60 s before the wrap, on the 20 ms grid
+  {  // millis() rollover: motion just before 2^32 ms, off exactly 10 s later on the other side of 0.
+    const uint32_t t0 = 0xFFFFFFFFu - 15000u + 1u;                   // 15 s before the wrap, on the 20 ms grid
     Sim s(t0);
     run(s, false, t0, t0 + 10000);
     run(s, true, t0 + 10000, t0 + 12000);
@@ -502,8 +507,8 @@ static void testPirLedTimer() {
     CHECK((uint32_t)(stopped + LED_HOLD) < stopped);                 // confirms the test really crossed the wrap
   }
 
-  {  // The old backend behaviour: "on" every 20 s for 5 minutes of motion AND for 1 more minute after it stopped (late
-     // alerts). The automatic timer stays in charge: off exactly 2 minutes after the motion ended, never renewed.
+  {  // The old backend behaviour: "on" every 20 s for 5 minutes of motion, and one more just after it stopped (a late
+     // alert). The automatic timer stays in charge: off exactly 10 s after the motion ended, never renewed.
     Sim s(0);
     run(s, false, 0, 10000);
     int kept = 0, notRenewed = 0, applied = 0;
@@ -521,15 +526,16 @@ static void testPirLedTimer() {
     CHECK(kept + notRenewed + applied == 15);
     uint32_t stopped = 0, prevT = 309980;
     bool was = s.detecting;
-    for (uint32_t t = 310000; t < 370000; t += POLL) {               // motion over; commands keep coming for 60 s
-      if ((t - 310000) % 20000 == 0) CHECK(s.command(LedMode::On, t) == RemotePirResult::KeptAuto);
+    for (uint32_t t = 310000; t < 370000; t += POLL) {               // motion over; one late command while still lit
+      if (t == 310000) CHECK(s.command(LedMode::On, t) == RemotePirResult::KeptAuto);
       s.step(false, t);
       if (was && !s.detecting && !stopped) stopped = prevT;
       was = s.detecting;
       prevT = t;
     }
     CHECK(stopped > 0);
-    CHECK(offExactlyAfterHold(s, stopped, 370000));                  // exactly 2 min after the motion ended
+    CHECK(stopped + LED_HOLD <= 370000);                             // the LED went off within the loop above ...
+    CHECK(!s.led);                                                   // ... exactly as the timer says, and stays off
     CHECK(s.mode == LedMode::Auto);
   }
 
@@ -599,7 +605,7 @@ int main() {
   testGasWarningWithProductionThresholds();
   testBurstMedian();
   testLedTestSchedule();
-  testGasPauseInterval();
+  testMotionStartPublish();
   testMotionFilter();
   printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;

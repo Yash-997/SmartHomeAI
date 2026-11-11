@@ -24,9 +24,13 @@ public final class TwinDtos {
 	/**
 	 * {@code desired} is the value of the newest ACKNOWLEDGED command (what the device confirmed it was told), with who asked
 	 * ({@code desiredBy}: "user", "automation:rule", "security:away"...). {@code requested} is a command still in flight.
+	 * {@code expected} is the mode the device should be in right now given the firmware's own rules (a remote PIR "on" lasts
+	 * 2 minutes, any forced mode at most 1 hour, and an "on" that arrives while motion already lights the LED is kept in
+	 * "auto"); it is what {@code reportedMode} is compared with.
 	 */
 	public record OutputTwin(String action, String label, String desired, String desiredBy, Instant desiredAt, String requested,
-			String reportedMode, Boolean reportedLit, Instant reportedAt, boolean reportedStale, SyncState sync, String note) {
+			String expected, String reportedMode, Boolean reportedLit, Instant reportedAt, boolean reportedStale, SyncState sync,
+			String note) {
 	}
 
 	public record PendingCommand(UUID id, String action, String value, CommandStatus status, Instant createdAt, Instant expiresAt, String origin) {

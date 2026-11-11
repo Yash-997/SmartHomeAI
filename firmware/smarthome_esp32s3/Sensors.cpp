@@ -18,7 +18,6 @@ static Snapshot shared;
 static LedMode pirMode = LedMode::Auto, gasMode = LedMode::Auto;   // remote overrides (also under `lock`)
 static uint32_t pirModeSince = 0, gasModeSince = 0;
 static bool pirAutoLit = false;   // the automatic PIR LED timer is lighting the LED (also under `lock`)
-static volatile bool gasSampleRequested = false;
 static volatile bool ledTestRequested = false;
 
 // Private to sensorsUpdate().
@@ -92,8 +91,9 @@ static DhtResult dhtRead(float& t, float& h) {
   return dht22Decode(lows, highs, 40, t, h);
 }
 
-// MQ-2 ADC, through the IDF one-shot driver rather than analogRead(): a conversion that fails (ADC2 is unavailable
-// while Wi-Fi runs) is reported as a failure, where analogRead() would silently return 0.
+// MQ-2 ADC (GPIO35 = ADC1 channel 7 on the classic ESP32), through the IDF one-shot driver rather than analogRead(): a
+// conversion that fails is reported as a failure, where analogRead() would silently return 0. ADC1 is independent of
+// the Wi-Fi radio, so it is read continuously while Wi-Fi and MQTT run.
 static adc_oneshot_unit_handle_t mq2Adc = nullptr;
 static adc_channel_t mq2Channel;
 static bool mq2AdcReady = false;
@@ -111,8 +111,8 @@ static void mq2AdcBegin() {
   mq2AdcReady = adc_oneshot_config_channel(mq2Adc, mq2Channel, &chanCfg) == ESP_OK;
 }
 
-/** One sample = the median of a burst of conversions. False when the ADC could not be read (e.g. radio running).
- *  The first MQ2_DISCARD_READS conversions are thrown away: right after the radio stops, ADC2 needs a moment. */
+/** One sample = the median of a burst of conversions. False when the ADC could not be read.
+ *  The first MQ2_DISCARD_READS conversions are thrown away (the sample-and-hold settles after a pause). */
 static bool mq2Sample(int& out) {
   if (!mq2AdcReady) return false;
   int values[MQ2_BURST_READS];
@@ -124,7 +124,7 @@ static bool mq2Sample(int& out) {
 }
 
 void sensorsBegin() {
-  pinMode(PIN_PIR, INPUT_PULLDOWN);   // an undriven PIR line reads LOW (no motion) instead of floating HIGH
+  pinMode(PIN_PIR, INPUT_PULLDOWN);   // GPIO26: an undriven PIR line reads LOW (no motion) instead of floating
   pinMode(PIN_PIR_LED, OUTPUT);
   pinMode(PIN_MQ2_LED, OUTPUT);
   digitalWrite(PIN_PIR_LED, LOW);
@@ -141,8 +141,6 @@ void sensorsBegin() {
 
   dhtBegin();
 }
-
-void sensorsRequestGasSample() { gasSampleRequested = true; }
 
 void sensorsStartLedTest() { ledTestRequested = true; }
 
@@ -212,8 +210,8 @@ void sensorsUpdate() {
 
   // --- MQ-2: the warning has hysteresis and is disabled during warm-up ---
   // NOTE: this block is the local safety logic. It never reads the remote override modes. A sample is only taken when
-  // the ADC can actually be read; on an ADC2 board that is while the radio is off. Missing samples never clear an active
-  // warning: it only ends on real readings below GAS_CLEAR_RAW.
+  // the ADC can actually be read. Missing samples never clear an active warning: it only ends on real readings below
+  // GAS_CLEAR_RAW.
   if (ledTestRequested) {
     ledTestRequested = false;
     ledTestOn = true;
@@ -234,23 +232,18 @@ void sensorsUpdate() {
       gasWarning.update(simRaw);
       warningLatched = gasWarning.active();
     }
-  } else if (gasSampleRequested || now - lastMq2Ms >= MQ2_SAMPLE_MS) {
+  } else if (now - lastMq2Ms >= MQ2_SAMPLE_MS) {
     lastMq2Ms = now;
-    gasSampleRequested = false;   // one immediate attempt; after that the regular period retries
     int sample;
     if (mq2Sample(sample)) {
       haveGasSample = true;
-      if (MQ2_ON_ADC2) {
-        gasValue = sample;   // samples are seconds apart: the burst average is the reading
-      } else {
-        mq2Ring[mq2Next] = sample;
-        mq2Next = (mq2Next + 1) % MQ2_AVG_SAMPLES;
-        if (mq2Count < MQ2_AVG_SAMPLES) mq2Count++;
-        long sum = 0;
-        for (int i = 0; i < mq2Count; i++) sum += mq2Ring[i];
-        gasValue = (int)(sum / mq2Count);
-      }
-      const bool warmingUp = now < MQ2_WARMUP_MS || (!MQ2_ON_ADC2 && mq2Count < MQ2_AVG_SAMPLES);
+      mq2Ring[mq2Next] = sample;   // moving average over the last MQ2_AVG_SAMPLES samples (2 s at 250 ms)
+      mq2Next = (mq2Next + 1) % MQ2_AVG_SAMPLES;
+      if (mq2Count < MQ2_AVG_SAMPLES) mq2Count++;
+      long sum = 0;
+      for (int i = 0; i < mq2Count; i++) sum += mq2Ring[i];
+      gasValue = (int)(sum / mq2Count);
+      const bool warmingUp = now < MQ2_WARMUP_MS || mq2Count < MQ2_AVG_SAMPLES;
       if (warmingUp) {
         gasWarning.reset();
       } else {

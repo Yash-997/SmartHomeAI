@@ -15,6 +15,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.smarthome.alert.MotionEmailService;
 import com.smarthome.command.CommandActions;
 import com.smarthome.command.CommandDtos.CreateCommandRequest;
 import com.smarthome.command.CommandService;
@@ -33,6 +34,7 @@ import com.smarthome.security.SecurityEvent.Severity;
 import com.smarthome.security.SecurityExceptions.InvalidSecurityRequestException;
 import com.smarthome.security.SecurityExceptions.SecurityEventNotFoundException;
 import com.smarthome.security.SecuritySettings.ModeConfig;
+import com.smarthome.telemetry.TelemetryRepository;
 import com.smarthome.telemetry.TelemetryStoredEvent;
 
 import com.smarthome.assistant.Text;
@@ -40,7 +42,13 @@ import com.smarthome.assistant.Text;
 /**
  * Away / Night security modes.
  *
- * <p>What a mode can do: record motion alerts (per device, rate limited), record devices that drop offline while armed,
+ * <p>Motion episodes: a device's motion episode starts with the first motion report in an armed mode and ends when the
+ * device reports no motion (its telemetry says "motion: false", i.e. a whole report interval without motion) or goes
+ * silent about motion for longer than {@link #EPISODE_GAP}. Each episode produces exactly one MOTION_ALERT (and, if the
+ * owner chose it, one PIR LED command), however long it lasts. The alert is a persistent event: it stays in the history,
+ * and in the list of open alerts, until someone acknowledges it. HOME mode records nothing.
+ *
+ * <p>What a mode can do: record motion alerts (one per episode per device), record devices that drop offline while armed,
  * and, if the owner chose it, set the PIR indicator LED to "on" through the normal {@link CommandService} (the same
  * ownership, online and validation checks as a person's command). What it can never do: send any gas-LED command, or
  * change anything that affects the firmware's own gas warning. The only command this class builds is
@@ -55,12 +63,11 @@ public class SecurityService {
 	/** Telemetry older than this is a replay, not something happening now. */
 	private static final Duration MAX_AGE = Duration.ofMinutes(2);
 	/**
-	 * "Light on motion" sends one PIR LED command per motion episode, not one per alert. An episode lasts while motion
-	 * alerts keep coming less than this far apart; it is longer than the device's own 2-minute PIR LED timer, which keeps
-	 * the LED lit for the rest of the episode. Re-sending "on" with every alert renewed the device's override and kept the
-	 * LED on indefinitely.
+	 * Motion reports this far apart, with nothing in between, belong to different episodes even without a "no motion"
+	 * report between them (e.g. the device was offline). Devices report every 30 s while motion continues, so this is
+	 * three missed reports.
 	 */
-	static final Duration LIGHT_EPISODE_GAP = Duration.ofSeconds(150);
+	static final Duration EPISODE_GAP = Duration.ofSeconds(90);
 
 	private final SecuritySettingsRepository settingsRepo;
 	private final SecurityEventRepository eventRepo;
@@ -68,18 +75,23 @@ public class SecurityService {
 	private final DeviceService deviceService;
 	private final CommandService commands;
 	private final DeviceCommandRepository commandRepo;
+	private final TelemetryRepository telemetry;
+	private final MotionEmailService motionEmails;
 	private final Clock clock;
 	/** Devices already reported offline in the current armed period (so one outage is one event). */
 	private final Set<UUID> offlineReported = ConcurrentHashMap.newKeySet();
 
 	public SecurityService(SecuritySettingsRepository settingsRepo, SecurityEventRepository eventRepo, DeviceRepository devices,
-			DeviceService deviceService, CommandService commands, DeviceCommandRepository commandRepo, Clock clock) {
+			DeviceService deviceService, CommandService commands, DeviceCommandRepository commandRepo, TelemetryRepository telemetry,
+			MotionEmailService motionEmails, Clock clock) {
 		this.settingsRepo = settingsRepo;
 		this.eventRepo = eventRepo;
 		this.devices = devices;
 		this.deviceService = deviceService;
 		this.commands = commands;
 		this.commandRepo = commandRepo;
+		this.telemetry = telemetry;
+		this.motionEmails = motionEmails;
 		this.clock = clock;
 	}
 
@@ -136,9 +148,17 @@ public class SecurityService {
 
 	@Transactional(readOnly = true)
 	public List<EventResponse> events(UUID owner, int limit, String kind) {
+		return events(owner, limit, kind, false);
+	}
+
+	/** {@code openOnly}: only alerts that are not acknowledged yet (never INFO rows), newest first. */
+	@Transactional(readOnly = true)
+	public List<EventResponse> events(UUID owner, int limit, String kind, boolean openOnly) {
 		PageRequest page = PageRequest.of(0, Math.max(1, Math.min(limit, 200)));
 		List<SecurityEvent> list;
-		if (kind == null || kind.isBlank()) {
+		if (openOnly) {
+			list = eventRepo.findByOwnerUserIdAndAcknowledgedAtIsNullAndSeverityNotOrderByCreatedAtDescIdDesc(owner, Severity.INFO, page);
+		} else if (kind == null || kind.isBlank()) {
 			list = eventRepo.findByOwnerUserIdOrderByCreatedAtDescIdDesc(owner, page);
 		} else {
 			Kind k;
@@ -189,22 +209,39 @@ public class SecurityService {
 		if (!cfg.motionAlerts()) {
 			return;
 		}
-		if (eventRepo.countByDeviceUuidAndKindAndCreatedAtAfter(device.getId(), Kind.MOTION_ALERT, now.minusSeconds(cfg.cooldownSeconds())) > 0) {
-			return;                                                   // already alerted for this device very recently
+		// Only alerts from the current armed period count: switching mode starts afresh.
+		Instant periodStart = s.getModeChangedAt() == null ? Instant.EPOCH : s.getModeChangedAt();
+		SecurityEvent last = eventRepo
+				.findFirstByDeviceUuidAndKindAndCreatedAtGreaterThanEqualOrderByCreatedAtDescIdDesc(device.getId(), Kind.MOTION_ALERT, periodStart)
+				.orElse(null);
+		if (last != null && sameEpisode(device.getId(), last, e.receivedAt())) {
+			return;                                                   // this episode already has its alert (and its LED command)
 		}
-		// Same episode = an earlier alert for this device within LIGHT_EPISODE_GAP, in the current mode. Checked before this
-		// alert is saved.
-		Instant episodeStart = now.minus(LIGHT_EPISODE_GAP);
-		if (s.getModeChangedAt() != null && s.getModeChangedAt().isAfter(episodeStart)) {
-			episodeStart = s.getModeChangedAt();
+		if (last != null && last.getCreatedAt().isAfter(now.minusSeconds(cfg.cooldownSeconds()))) {
+			return;                                                   // flap guard: a new episode right after the previous alert
 		}
-		boolean sameEpisode = eventRepo.countByDeviceUuidAndKindAndCreatedAtAfter(device.getId(), Kind.MOTION_ALERT, episodeStart) > 0;
 		String name = Text.oneLine(device.getName(), 60);
-		eventRepo.save(new SecurityEvent(owner, device.getId(), Kind.MOTION_ALERT, Severity.WARNING, mode,
-				"Motion detected by \"" + name + "\" while in " + label(mode) + " mode.", now));
-		if (cfg.lightOnMotion() && !sameEpisode) {
-			lightPirLed(owner, device, name, mode, s);
+		SecurityEvent alert = eventRepo.save(new SecurityEvent(owner, device.getId(), Kind.MOTION_ALERT, Severity.WARNING, mode,
+				"Motion detected while " + label(mode) + " by \"" + name + "\".", now));
+		if (mode == SecurityMode.AWAY) {
+			motionEmails.alertSaved(alert, device, s.getModeChangedAt());   // queued; the alert is already saved
 		}
+		if (cfg.lightOnMotion()) {
+			lightPirLed(owner, device, name, mode, s);                // once per episode, like the alert
+		}
+	}
+
+	/**
+	 * The reading at {@code at} continues the episode that {@code lastAlert} opened: the device has not reported "no motion"
+	 * since that alert, and it reported motion shortly before this reading.
+	 */
+	private boolean sameEpisode(UUID device, SecurityEvent lastAlert, Instant at) {
+		boolean endedSince = telemetry.existsByDeviceUuidAndMotionAndReceivedAtGreaterThanEqualAndReceivedAtLessThan(device, Boolean.FALSE,
+				lastAlert.getCreatedAt(), at);
+		if (endedSince) {
+			return false;
+		}
+		return telemetry.existsByDeviceUuidAndMotionAndReceivedAtGreaterThanEqualAndReceivedAtLessThan(device, Boolean.TRUE, at.minus(EPISODE_GAP), at);
 	}
 
 	/** Reports devices that went offline while the owner is in an armed mode. One event per outage. */

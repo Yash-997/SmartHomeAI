@@ -123,7 +123,7 @@ class SecurityModeTests extends IntelTestBase {
 	}
 
 	@Test
-	void repeatedMotionIsRateLimitedPerDevice() throws Exception {
+	void oneMotionEpisodeIsOneAlertPerDevice() throws Exception {
 		String t = newUserToken();
 		Paired a = onlineNamed(t, "Garage");
 		Paired b = onlineNamed(t, "Shed");
@@ -132,15 +132,86 @@ class SecurityModeTests extends IntelTestBase {
 		motion(a);
 		motion(a);
 		motion(a);
-		assertEquals(1, countKind(t, "MOTION_ALERT"), "one alert per device per cooldown");
+		assertEquals(1, countKind(t, "MOTION_ALERT"), "continuing motion is the same episode");
 		motion(b);
 		assertEquals(2, countKind(t, "MOTION_ALERT"), "another device alerts on its own");
 
-		// time passes: age the first alert beyond the cooldown (60 s default)
-		jdbc.update("update security_events set created_at = ? where device_uuid = ? and kind = 'MOTION_ALERT'",
-				java.sql.Timestamp.from(Instant.now().minusSeconds(120)), a.uuid());
+		// motion stops (a report with motion=false), time passes beyond the 60 s flap guard, motion again: a new episode
+		stillness(a);
+		ageHistory(a, 120);
 		motion(a);
 		assertEquals(3, countKind(t, "MOTION_ALERT"));
+	}
+
+	@Test
+	void aLongEpisodeStaysOneAlertAndANewEpisodeStartsOnlyAfterMotionStopped() throws Exception {
+		String t = newUserToken();
+		Paired p = onlineNamed(t, "Hallway");
+		setMode(t, "AWAY");
+		motion(p);
+		for (int i = 0; i < 10; i++) {                            // 5 more minutes of motion, a report every 30 s
+			ageHistory(p, 30);
+			motion(p);
+		}
+		assertEquals(1, countKind(t, "MOTION_ALERT"), "a 5-minute episode is one alert, not one per cooldown");
+
+		stillness(p);                                             // the episode ends
+		ageHistory(p, 30);
+		assertEquals(1, countKind(t, "MOTION_ALERT"), "the alert is kept after motion stops");
+		assertNull(events(t).get(0).get("acknowledgedAt").asString(null), "and stays unacknowledged");
+		ageHistory(p, 60);
+		motion(p);                                                // a new episode
+		assertEquals(2, countKind(t, "MOTION_ALERT"));
+	}
+
+	@Test
+	void motionAfterALongSilenceIsANewEpisodeEvenWithoutANoMotionReport() throws Exception {
+		String t = newUserToken();
+		Paired p = onlineNamed(t, "Patchy wifi");
+		setMode(t, "AWAY");
+		motion(p);
+		ageHistory(p, 600);                                       // the device was offline for 10 minutes
+		motion(p);
+		assertEquals(2, countKind(t, "MOTION_ALERT"));
+	}
+
+	@Test
+	void openAlertsStayListedUntilAcknowledgedHoweverMuchHistoryFollows() throws Exception {
+		String t = newUserToken();
+		Paired p = onlineNamed(t, "Back door");
+		setMode(t, "AWAY");
+		motion(p);
+		stillness(p);
+		String alertId = events(t).get(0).get("id").asString();
+		for (int i = 0; i < 20; i++) {                            // 40 newer mode-change events push it out of a short list
+			setMode(t, "NIGHT");
+			setMode(t, "AWAY");
+		}
+		assertFalse(json(getAs(t, "/api/security/events?limit=30")).toString().contains(alertId));
+		JsonNode open = json(getAs(t, "/api/security/events?unacknowledged=true"));
+		assertEquals(1, open.size(), open.toString());
+		assertEquals(alertId, open.get(0).get("id").asString());
+		assertEquals("MOTION_ALERT", open.get(0).get("kind").asString());
+		assertTrue(open.get(0).get("message").asString().startsWith("Motion detected while Away"), open.get(0).get("message").asString());
+
+		postAs(t, "/api/security/events/" + alertId + "/acknowledge", null).andExpect(status().isOk());
+		assertEquals(0, json(getAs(t, "/api/security/events?unacknowledged=true")).size());
+		assertTrue(json(getAs(t, "/api/security/events?kind=MOTION_ALERT")).get(0).get("acknowledgedAt").asString(null) != null,
+				"acknowledged alerts remain in the history");
+	}
+
+	@Test
+	void motionAtHomeNeverAlertsAndNeverSendsALedCommand() throws Exception {
+		String t = newUserToken();
+		Paired p = onlineNamed(t, "Living room");
+		putAs(t, "/api/security/config", ARMED_WITH_LED).andExpect(status().isOk());
+		int before = publisher.publishedTo(p.deviceId()).size();
+		for (int i = 0; i < 3; i++) {
+			motion(p);
+			stillness(p);
+		}
+		assertEquals(0, countKind(t, "MOTION_ALERT"));
+		assertEquals(before, publisher.publishedTo(p.deviceId()).size(), "the LED is left entirely to the device's own timer");
 	}
 
 	@Test
@@ -289,9 +360,10 @@ class SecurityModeTests extends IntelTestBase {
 
 	// ---- one LED command per motion episode (never a stream of renewals) ----------------------
 
-	/** Moves this device's motion history and the user's last mode change back in time (test database only). */
+	/** Moves this device's security events, its telemetry and the user's last mode change back in time (test database only). */
 	private void ageHistory(Paired p, int seconds) {
 		jdbc.update("update security_events set created_at = DATEADD('SECOND', ?, created_at) where device_uuid = ?", -seconds, p.uuid());
+		jdbc.update("update telemetry_readings set received_at = DATEADD('SECOND', ?, received_at) where device_uuid = ?", -seconds, p.uuid());
 		jdbc.update("update security_settings set mode_changed_at = DATEADD('SECOND', ?, mode_changed_at) where owner_user_id = ?", -seconds,
 				p.userId());
 	}
@@ -325,8 +397,8 @@ class SecurityModeTests extends IntelTestBase {
 			motion(p);
 		}
 
-		assertEquals(11, countKind(t, "MOTION_ALERT"), "monitoring is unchanged: every alert is still recorded");
-		assertEquals(1, securityLedOns(p), "but the LED was told 'on' once, so the device's 2-minute timer is never renewed");
+		assertEquals(1, countKind(t, "MOTION_ALERT"), "one episode, one alert");
+		assertEquals(1, securityLedOns(p), "and the LED was told 'on' once, so the device's own timer is never renewed");
 		assertEquals(1, countKind(t, "ACTION_TAKEN"));
 	}
 
@@ -343,14 +415,15 @@ class SecurityModeTests extends IntelTestBase {
 		assertEquals(1, securityLedOns(p));
 
 		deviceAcksAll(p);
-		ageHistory(p, 200);                                       // quiet for longer than the episode gap (150 s)
+		stillness(p);                                             // motion stopped
+		ageHistory(p, 200);                                       // quiet for a while
 		motion(p);                                                // new episode
 		deviceAcksAll(p);
 		ageHistory(p, 30);
 		motion(p);                                                // same (second) episode
 
 		assertEquals(2, securityLedOns(p), "one command per episode");
-		assertEquals(4, countKind(t, "MOTION_ALERT"));
+		assertEquals(2, countKind(t, "MOTION_ALERT"), "and one alert per episode");
 	}
 
 	@Test

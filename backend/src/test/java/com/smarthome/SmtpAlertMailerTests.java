@@ -20,7 +20,10 @@ import org.springframework.mail.javamail.JavaMailSenderImpl;
 
 import com.smarthome.alert.AlertMailer.MailDeliveryException;
 import com.smarthome.alert.AlertProperties;
+import com.smarthome.alert.EmailContent;
 import com.smarthome.alert.SmtpAlertMailer;
+
+import jakarta.mail.internet.MimeMessage;
 
 /** The real Gmail mailer, with the SMTP transport replaced: configuration checks and secret-free error reporting. */
 class SmtpAlertMailerTests {
@@ -30,6 +33,7 @@ class SmtpAlertMailerTests {
 	/** Records messages, or throws the given exception instead of talking to a server. */
 	static class FakeSender extends JavaMailSenderImpl {
 		final List<SimpleMailMessage> sent = new ArrayList<>();
+		final List<MimeMessage> sentMime = new ArrayList<>();
 		MailException fail;
 
 		@Override
@@ -39,6 +43,14 @@ class SmtpAlertMailerTests {
 			}
 			sent.addAll(List.of(messages));
 		}
+
+		@Override
+		public void send(MimeMessage... messages) {
+			if (fail != null) {
+				throw fail;
+			}
+			sentMime.addAll(List.of(messages));
+		}
 	}
 
 	private static SmtpAlertMailer mailer(FakeSender sender, String username, String password, String mailFrom) {
@@ -46,7 +58,7 @@ class SmtpAlertMailerTests {
 		if (sender != null) {
 			beans.addBean("mailSender", sender);
 		}
-		return new SmtpAlertMailer(beans.getBeanProvider(JavaMailSender.class), new AlertProperties(true, 2500, 15, 2, mailFrom),
+		return new SmtpAlertMailer(beans.getBeanProvider(JavaMailSender.class), new AlertProperties(true, 2500, 15, 2, mailFrom, true, "", ""),
 				username, password);
 	}
 
@@ -69,6 +81,30 @@ class SmtpAlertMailerTests {
 		assertEquals("home@gmail.com", s.sent.get(0).getFrom());
 		assertEquals("owner@example.com", s.sent.get(0).getTo()[0]);
 		assertEquals("alerts@example.com", s.sent.get(1).getFrom());
+	}
+
+	@Test
+	void htmlEmailsCarryAPlainTextAlternativeAndTheSameSecretFreeErrors() throws Exception {
+		FakeSender s = new FakeSender();
+		SmtpAlertMailer m = mailer(s, "home@gmail.com", PASSWORD, "");
+		m.send(new EmailContent("Motion detected while you are away: Hall", "plain part", "<p>html part</p>"), "owner@example.com");
+
+		MimeMessage msg = s.sentMime.get(0);
+		msg.saveChanges();
+		java.io.ByteArrayOutputStream raw = new java.io.ByteArrayOutputStream();
+		msg.writeTo(raw);
+		String wire = raw.toString(java.nio.charset.StandardCharsets.UTF_8);
+		assertEquals("Motion detected while you are away: Hall", msg.getSubject());
+		assertEquals("home@gmail.com", msg.getFrom()[0].toString());
+		assertTrue(wire.contains("multipart/alternative"), "text and HTML alternatives");
+		assertTrue(wire.contains("plain part") && wire.contains("<p>html part</p>"));
+		assertFalse(wire.contains(PASSWORD));
+
+		s.fail = new MailAuthenticationException("535 bad credentials " + PASSWORD);
+		MailDeliveryException e = assertThrows(MailDeliveryException.class, () -> m.send(new EmailContent("s", "t", "<p>h</p>"), "a@b.c"));
+		assertTrue(e.getMessage().contains("SMTP login was rejected"));
+		assertFalse(e.getMessage().contains(PASSWORD));
+		assertThrows(MailDeliveryException.class, () -> mailer(s, "", "", "").send(new EmailContent("s", "t", "h"), "a@b.c"));
 	}
 
 	@Test

@@ -112,7 +112,7 @@ public class GasAlertService {
 			alert.alertDelivered(Delivery.SKIPPED, clock.instant(), "Email is not configured (MAIL_USERNAME / MAIL_PASSWORD).");
 		} else {
 			try {
-				mailer.send(to.get(), "EMERGENCY: gas/smoke detected by " + clean(alert.getDeviceName()), alertBody(alert));
+				mailer.send(AlertEmailTemplates.gasAlert(alert, props), to.get());
 				alert.alertDelivered(Delivery.SENT, clock.instant(), null);
 			} catch (MailDeliveryException e) {
 				log.warn("Gas alert email for device {} failed: {}", alert.getDeviceUuid(), e.getMessage());
@@ -130,7 +130,7 @@ public class GasAlertService {
 			alert.recoveryDelivered(Delivery.SKIPPED, clock.instant(), "Email is not configured (MAIL_USERNAME / MAIL_PASSWORD).");
 		} else {
 			try {
-				mailer.send(to.get(), "Resolved: gas/smoke readings back to normal on " + clean(alert.getDeviceName()), recoveryBody(alert));
+				mailer.send(AlertEmailTemplates.gasRecovered(alert, props), to.get());
 				alert.recoveryDelivered(Delivery.SENT, clock.instant(), null);
 			} catch (MailDeliveryException e) {
 				log.warn("Gas recovery email for device {} failed: {}", alert.getDeviceUuid(), e.getMessage());
@@ -149,31 +149,8 @@ public class GasAlertService {
 		return n == null || n.isBlank() ? d.getDeviceId() : n;
 	}
 
-	/** Device names are user text: drop control characters so they can never break out of the subject line. */
-	private static String clean(String s) {
-		return s.replaceAll("\\p{Cntrl}", " ").trim();
-	}
-
 	private static String trim(String s) {
 		return s == null ? null : (s.length() > 200 ? s.substring(0, 200) : s);
-	}
-
-	private String alertBody(GasAlert a) {
-		return "EMERGENCY: possible gas or smoke.\n\n"
-				+ "Device: " + clean(a.getDeviceName()) + "\n"
-				+ "MQ-2 reading: " + a.getTriggerGasRaw() + " (raw 0-4095, alert threshold " + a.getThreshold() + ")\n"
-				+ "Detected at: " + a.getStartedAt() + "\n\n"
-				+ "Please check the area now. If you smell gas or see smoke, leave the building, avoid switches and flames, "
-				+ "and call your local emergency number from outside.\n\n"
-				+ "You will get one more email when the readings return to normal. This is a hobby sensor, not a certified alarm.\n";
-	}
-
-	private String recoveryBody(GasAlert a) {
-		return "Gas/smoke readings are back to normal.\n\n"
-				+ "Device: " + clean(a.getDeviceName()) + "\n"
-				+ "Latest MQ-2 reading: " + a.getLastGasRaw() + " (below " + a.getRecoveryThreshold() + ")\n"
-				+ "Peak during the incident: " + a.getPeakGasRaw() + "\n"
-				+ "Started: " + a.getStartedAt() + "\nEnded: " + a.getRecoveredAt() + "\n";
 	}
 
 	// ---- read side (scoped to the owner) -------------------------------------------------------
@@ -218,9 +195,7 @@ public class GasAlertService {
 			return Optional.of(new AlertDtos.TestEmailResponse("SKIPPED", masked, "Email is not configured (MAIL_USERNAME / MAIL_PASSWORD)."));
 		}
 		try {
-			mailer.send(to.get(), "SmartHomeAI test email",
-					"This is a test message from your SmartHomeAI backend.\n\nIf you can read it, Gmail SMTP is set up correctly "
-							+ "and gas alerts will reach this address.\nNo gas incident was created.\n");
+			mailer.send(AlertEmailTemplates.testEmail(props), to.get());
 			return Optional.of(new AlertDtos.TestEmailResponse("SENT", masked, "The SMTP server accepted the message."));
 		} catch (MailDeliveryException e) {
 			log.warn("Test email failed: {}", e.getMessage());

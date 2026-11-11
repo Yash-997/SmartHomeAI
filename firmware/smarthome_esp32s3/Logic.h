@@ -119,7 +119,7 @@ class GasWarning {
 
 // ---------------------------------------------------------------------------------------------------------------------
 // One MQ-2 sample from a burst of ADC conversions: the MEDIAN of the conversions that succeeded. Failed conversions
-// (ok[i] == false: the ADC was busy, e.g. ADC2 while Wi-Fi runs) are left out instead of being counted as 0, and the
+// (ok[i] == false: the conversion failed) are left out instead of being counted as 0, and the
 // median ignores a few stray values (e.g. zeros from an ADC that has not settled) that would drag a mean down.
 // At least half must succeed, otherwise there is no sample. minOut/maxOut give the spread, for diagnostics.
 // ---------------------------------------------------------------------------------------------------------------------
@@ -190,13 +190,6 @@ inline DhtResult dht22Decode(const int32_t* lowUs, const int32_t* highUs, int bi
   return DhtResult::Ok;
 }
 
-/** How long until the next radio pause for an ADC2 gas sample: sooner while the gas is near the threshold or a warning
- *  is on, so an incident is confirmed (and ended) quickly. */
-inline uint32_t gasPauseInterval(int lastRaw, bool haveRaw, bool warning, int clearBelow, uint32_t normalMs, uint32_t fastMs) {
-  if (warning || (haveRaw && lastRaw >= clearBelow)) return fastMs;
-  return normalMs;
-}
-
 // ---------------------------------------------------------------------------------------------------------------------
 // PIR motion filter, fed the raw pin level with the current time (ms, wrap-safe).
 //   warm-up : for warmupMs after start the output is ignored (a PIR's output is unreliable while it settles).
@@ -237,7 +230,7 @@ class MotionFilter {
   /** How long the debounced output has been HIGH without a break (0 when LOW). */
   uint32_t highFor(uint32_t nowMs) const { return stable_ ? nowMs - highSince_ : 0; }
   /** The PIR is detecting motion right now: debounced output HIGH and not warming up. Unlike update()'s result it has
-   *  no hold, so it marks the exact moment motion starts and stops (used for the PIR LED's 2-minute timer). */
+   *  no hold, so it marks the exact moment motion starts and stops (used for the PIR LED's hold timer). */
   bool detecting(uint32_t nowMs) const { return stable_ && !warmingUp(nowMs); }
   /** Debounced pin level (diagnostics). */
   bool stable() const { return stable_; }
@@ -256,7 +249,7 @@ class MotionFilter {
 
 // ---------------------------------------------------------------------------------------------------------------------
 // LED modes.
-//   Auto = the local logic decides (PIR LED: on while motion is detected and for 2 minutes after it stops; gas LED
+//   Auto = the local logic decides (PIR LED: on while motion is detected and for PIR_LED_HOLD_MS after it stops; gas LED
 //          shows the gas warning).
 //   On   = forced on (PIR LED: for at most PIR_LED_REMOTE_ON_MS, then Auto).   Off = forced off (PIR LED only).
 // SAFETY: the gas warning always wins. gasLedOutput() is true whenever a gas warning is active, whatever the mode,
@@ -331,8 +324,8 @@ enum class RemotePirResult { Applied, KeptAuto, NotRenewed };
 
 /**
  * Applies a remote PIR LED mode. The automatic behaviour has priority over repeated "on" commands:
- *  - "on" while in Auto with the LED already lit by motion (or its 2-minute timer) changes nothing: the automatic timer
- *    stays in charge, so the LED goes off 2 minutes after the motion ends, whatever the backend keeps sending;
+ *  - "on" while in Auto with the LED already lit by motion (or its hold timer) changes nothing: the automatic timer
+ *    stays in charge, so the LED goes off PIR_LED_HOLD_MS after the motion ends, whatever the backend keeps sending;
  *  - "on" while an "on" override is already active does not extend it (it still ends onMaxMs after the first one).
  * "auto" and "off" always apply.
  */
@@ -346,13 +339,21 @@ inline RemotePirResult applyRemotePirMode(LedMode& mode, uint32_t& sinceMs, LedM
   return RemotePirResult::Applied;
 }
 
-/** Ack detail for a remote PIR LED result (no quotes or control characters: embedded in JSON as is). */
+/** Ack detail for a remote PIR LED result (no quotes or control characters: embedded in JSON as is). The leading
+ *  "kept auto" / "not renewed" is read by the backend's device twin (TwinService): keep these prefixes stable. */
 inline const char* remotePirDetail(RemotePirResult r) {
   switch (r) {
-    case RemotePirResult::KeptAuto: return "LED already lit by motion; automatic 2-minute timer kept";
-    case RemotePirResult::NotRenewed: return "LED already forced on; timer not renewed";
+    case RemotePirResult::KeptAuto: return "kept auto: LED already lit by motion, local timer kept";
+    case RemotePirResult::NotRenewed: return "not renewed: LED already forced on, timer not renewed";
     default: return "";
   }
+}
+
+/** Send telemetry right now because motion has just started (rising edge of the filtered motion state), at most once
+ *  per minGapMs (rollover-safe). lastMs == 0 means "never sent early". */
+inline bool motionStartPublishDue(bool motionNow, bool motionBefore, uint32_t nowMs, uint32_t lastMs, uint32_t minGapMs) {
+  if (!motionNow || motionBefore) return false;
+  return lastMs == 0 || (uint32_t)(nowMs - lastMs) >= minGapMs;
 }
 
 inline bool pirLedOutput(LedMode mode, bool motionNow) {

@@ -54,8 +54,8 @@ public class SecurityController {
 
 	@GetMapping("/events")
 	public List<EventResponse> events(@AuthenticationPrincipal Jwt jwt, @RequestParam(defaultValue = "50") int limit,
-			@RequestParam(required = false) String kind) {
-		return service.events(userId(jwt), limit, kind);
+			@RequestParam(required = false) String kind, @RequestParam(defaultValue = "false") boolean unacknowledged) {
+		return service.events(userId(jwt), limit, kind, unacknowledged);
 	}
 
 	@PostMapping("/events/{id}/acknowledge")

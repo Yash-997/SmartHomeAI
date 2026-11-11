@@ -29,6 +29,10 @@ public interface TelemetryRepository extends JpaRepository<TelemetryReading, Lon
 
 	long countByDeviceUuid(UUID deviceUuid);
 
+	/** Was there a reading with this motion value in [from, to)? Used by Security to tell where a motion episode ends. */
+	boolean existsByDeviceUuidAndMotionAndReceivedAtGreaterThanEqualAndReceivedAtLessThan(UUID deviceUuid, Boolean motion, Instant from,
+			Instant to);
+
 	/** Used when a device is disowned so a later owner can never see the previous owner's data. */
 	@Modifying
 	@Query("delete from TelemetryReading t where t.deviceUuid = :deviceUuid")

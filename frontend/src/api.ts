@@ -469,6 +469,8 @@ export interface OutputTwin {
   desiredBy: string | null
   desiredAt: string | null
   requested: string | null
+  /** The mode the device should be in right now (forced modes are temporary on the device); compared with reportedMode. */
+  expected: string | null
   reportedMode: string | null
   reportedLit: boolean | null
   reportedAt: string | null
@@ -542,6 +544,8 @@ export const api = {
   configureSecurity: (cfg: { away?: ModeConfig; night?: ModeConfig }) =>
     request<SecuritySettings>('/api/security/config', { method: 'PUT', body: JSON.stringify(cfg) }, true),
   securityEvents: (limit = 30) => request<SecurityEvent[]>(`/api/security/events?limit=${limit}`, {}, true),
+  /** Alerts not acknowledged yet, however old: they stay on the dashboard until someone acknowledges them. */
+  openSecurityAlerts: () => request<SecurityEvent[]>('/api/security/events?unacknowledged=true&limit=100', {}, true),
   acknowledgeEvent: (id: string) => request<SecurityEvent>(`/api/security/events/${id}/acknowledge`, { method: 'POST' }, true),
   gasAlertConfig: () => request<GasAlertConfig>('/api/alerts/gas/config', {}, true),
   gasAlerts: (limit = 20) => request<GasAlert[]>(`/api/alerts/gas?limit=${limit}`, {}, true),

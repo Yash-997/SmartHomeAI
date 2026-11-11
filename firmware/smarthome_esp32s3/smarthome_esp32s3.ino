@@ -1,4 +1,4 @@
-// AI Smart Home: ESP32-S3 sensor node.
+// AI Smart Home: ESP32 sensor node (classic ESP32 DevKit, "ESP32 Dev Module").
 //
 //   loop()  (core 1): sensors + LEDs + gas warning. Entirely local; works with no Wi-Fi, MQTT or backend.
 //   network (core 0): Wi-Fi, pairing, authenticated MQTT, telemetry. See NetLink.cpp.

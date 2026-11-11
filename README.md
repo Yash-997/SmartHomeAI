@@ -11,7 +11,7 @@ College mega project.
 - **Chunk 7**: ML intelligence (occupancy prediction with a Java logistic-regression model, explainable anomaly detection, ML Insights page). See [ML Intelligence](#ml-intelligence).
 - **Chunk 9**: security modes (Away/Night), device digital twin, approval-gated recommendations and an authenticated system status on the dashboard. See [Security and intelligence](#security-modes-digital-twin-recommendations-and-system-status).
 - **Chunk 8**: AI assistant with RAG (PostgreSQL + pgvector retrieval over your own devices, readings, anomalies and rules; approval-gated rule suggestions). See [AI Assistant](#ai-assistant-rag).
-- **Firmware**: ESP32-S3 sketch (Wi-Fi, pairing, authenticated MQTT, telemetry); see [ESP32 firmware](#esp32-firmware). **It compiles but has not been run on real hardware yet.**
+- **Firmware**: classic ESP32 DevKit sketch (Wi-Fi, pairing, authenticated MQTT, telemetry); see [ESP32 firmware](#esp32-firmware). **It compiles but has not been run on real hardware yet.**
 
 Not implemented yet: chatbot, RAG, embeddings, ML, energy features.
 
@@ -20,7 +20,7 @@ Not implemented yet: chatbot, RAG, embeddings, ML, energy features.
 | Path | Purpose |
 |---|---|
 | `backend/` | Spring Boot 4 (Java 21, Maven) REST API, MQTT ingest, Flyway migrations |
-| `firmware/smarthome_esp32s3/` | ESP32-S3 Arduino sketch (`firmware/tests/` has host-side unit tests) |
+| `firmware/smarthome_esp32s3/` | ESP32 (classic DevKit) Arduino sketch; the folder name is historical (`firmware/tests/` has host-side unit tests) |
 | `frontend/` | React + Vite + TypeScript + Tailwind CSS |
 | `docker-compose.yml` | PostgreSQL (pgvector) and Eclipse Mosquitto (+ a one-shot broker init) |
 | `infra/mosquitto/mosquitto.conf` | Broker config: no anonymous access, Dynamic Security plugin |
@@ -435,16 +435,17 @@ All four appear on the **Dashboard** and need a user login. Everything is scoped
 
 ### Security modes (Home / Away / Night)
 
-- **Home**: nothing is watched. **Away** and **Night** each have their own settings: record motion alerts (yes/no), at most one alert per device per N seconds (10 to 3600), and optionally also set the PIR LED to `on` (given back to `auto` when the mode ends, or when the option is turned off).
+- **Home**: nothing is watched (motion still drives the PIR LED locally on the device, but no alert is recorded). **Away** and **Night** each have their own settings: record motion alerts (yes/no), ignore a new episode within N seconds of the previous alert (10 to 3600, a guard against a flickering sensor), and optionally also ask the PIR LED to switch `on` once per episode (given back to `auto` when the mode ends, or when the option is turned off).
+- **Motion episodes**: one episode = one `MOTION_ALERT`, however long the motion lasts. An episode ends when the device reports `motion: false` (a whole report interval without motion) or sends no motion report for 90 s; the next motion after that is a new episode. Switching mode starts afresh. The device sends a report the moment motion starts, so the alert appears within seconds; the dashboard shows it under **Open alerts** (titled "MOTION DETECTED WHILE AWAY") until it is acknowledged, however much newer history there is, and it stays in the history afterwards.
 - **What is recorded** (the security event history): mode and settings changes, motion alerts (WARNING), a device going offline while armed (WARNING, once per outage), and the LED action taken or failed. Alerts can be acknowledged one by one or all at once. Telemetry older than two minutes (replays) never raises an alert.
 - **How it reacts**: each stored telemetry message with `motion=true` is handed, after its transaction commits, to a dedicated worker thread (the same pattern as the automation engine), so alerts never run on the MQTT thread and the cooldown is race-free. Offline detection runs every 30 s (`app.security.sweep-ms`).
 - **The LED action goes through `CommandService`** (origin `security:away` / `security:night` / `security:restore`), so it has the same ownership, online and validation checks as a person's command. On leaving the mode, the PIR LED is only restored if the newest PIR command is the one security sent: a value the owner set afterwards is left alone.
 - **Gas**: the only command security can build is `set_pir_led`. It never sends a gas-LED command, a mode change on its own sends nothing, and the firmware's gas warning does not depend on any of this. A test drives every mode with a very high raw gas value and checks that no `set_gas_led` command exists.
-- Endpoints: `GET /api/security/settings`, `PUT /api/security/mode` (`{mode}`), `PUT /api/security/config` (`{away?, night?}`), `GET /api/security/events?limit=&kind=`, `POST /api/security/events/{id}/acknowledge`, `POST /api/security/events/acknowledge-all`. Migration `V9__security_and_recommendations.sql`.
+- Endpoints: `GET /api/security/settings`, `PUT /api/security/mode` (`{mode}`), `PUT /api/security/config` (`{away?, night?}`), `GET /api/security/events?limit=&kind=&unacknowledged=`, `POST /api/security/events/{id}/acknowledge`, `POST /api/security/events/acknowledge-all`. Migration `V9__security_and_recommendations.sql`.
 
 ### Device digital twin
 
-`GET /api/twins` and `GET /api/devices/{id}/twin` (404 unless you own the device). Computed from the device record, its state report and its command history; nothing is stored. Per output (PIR LED, gas LED): the last **confirmed** request (newest acknowledged command, and who asked: `user`, `automation:<rule>`, `security:away`...), a command still in flight, what the device **reports**, and a state: `IN_SYNC`, `PENDING`, `DRIFT` (reports something else, for example after a restart), `UNREPORTED` (no recent state report), `UNKNOWN` (a later command was never acknowledged) or `NO_DESIRED` (nothing confirmed yet, so nothing is compared). Also: connection, last-seen and last-reading ages, pending commands, command problems in 24 h, and the gas warning *as the device last reported it*.
+`GET /api/twins` and `GET /api/devices/{id}/twin` (404 unless you own the device). Computed from the device record, its state report and its command history; nothing is stored. Per output (PIR LED, gas LED): the last **confirmed** request (newest acknowledged command, and who asked: `user`, `automation:<rule>`, `security:away`...), a command still in flight, what the device is **expected** to be doing now, what it **reports**, and a state. The expected mode follows the firmware's own rules, so normal device behaviour is not shown as drift: a PIR `on` acknowledged as "kept auto" (motion had already lit the LED) is expected to stay `auto`; a PIR `on` ends after 2 minutes; any forced mode ends after 1 hour. The device sends a state report whenever an LED switches on or off, so "lit" is current. States: `IN_SYNC`, `PENDING`, `DRIFT` (reports something else, for example after a restart), `UNREPORTED` (no recent state report), `UNKNOWN` (a later command was never acknowledged) or `NO_DESIRED` (nothing confirmed yet, so nothing is compared). Also: connection, last-seen and last-reading ages, pending commands, command problems in 24 h, and the gas warning *as the device last reported it*.
 
 ### Recommendations (approval required)
 
@@ -640,35 +641,36 @@ docker exec smarthome-postgres psql -U smarthome -d smarthome -c "SELECT d.devic
 
 ## ESP32 firmware
 
-Sketch: `firmware/smarthome_esp32s3/` (C++, Arduino framework, ESP32-S3). It reads the sensors locally and, once paired, publishes them over authenticated MQTT and accepts LED commands, using exactly the topics and JSON described above.
+Sketch: `firmware/smarthome_esp32s3/` (C++, Arduino framework, classic ESP32 DevKit, board "ESP32 Dev Module"). It reads the sensors locally and, once paired, publishes them over authenticated MQTT and accepts LED commands, using exactly the topics and JSON described above.
 
-**Status:** it compiles, its payload builders, pairing-code parser, back-off, gas-warning and command-validation logic are unit-tested on a PC, and its payloads and command handling were replayed through the real broker and backend. **It has not been run on a physical ESP32-S3**, so everything in the [hardware verification checklist](#hardware-verification-checklist) is still for you to confirm.
+**Status:** it compiles, its payload builders, pairing-code parser, back-off, gas-warning and command-validation logic are unit-tested on a PC, and its payloads and command handling were replayed through the real broker and backend. **It has not yet been verified end to end on the physical board**, so everything in the [hardware verification checklist](#hardware-verification-checklist) is still for you to confirm.
 
 ### Pins
 
 | Function | GPIO | Note |
 |---|---|---|
 | DHT22 data | 14 | as originally specified |
-| PIR output | **5** | was 26 |
+| PIR output | 26 | as originally specified |
 | PIR LED | 12 | as originally specified |
-| MQ-2 analog (AO) | **4** | was 35 |
+| MQ-2 analog (AO) | 35 | as originally specified (ADC1 channel 7) |
 | MQ-2 LED | 13 | as originally specified |
 
-Two pins were moved because the originals cannot work on an ESP32-S3: **GPIO35 has no ADC** (the S3's ADC inputs are GPIO1-20; GPIO4 is ADC1 channel 3) and **GPIO26 is wired to the module's flash/PSRAM** (GPIO26-32 are not usable, and GPIO33-37 are taken by octal flash/PSRAM on N8R8/N16R8 boards). The original numbers suit a classic ESP32 DevKit. **Move the PIR signal wire to GPIO5 and the MQ-2 AO wire to GPIO4.** All pins are in `config.h`, and the build fails with an explanation if a pin is unsuitable for the S3.
+These are the original wiring of the classic ESP32 DevKit. GPIO35 is on **ADC1**, which keeps working while Wi-Fi is on, so the MQ-2 is read continuously and the Wi-Fi radio is never stopped for a gas reading. (ADC2 cannot be read while Wi-Fi runs; the build refuses an ADC2 pin for the MQ-2.) All pins are in `config.h`, and the build fails with an explanation if a pin is unsuitable. An optional ESP32-S3 build still exists (`--fqbn esp32:esp32:esp32s3`), with PIR on GPIO5 and MQ-2 on GPIO4, because GPIO26/35 cannot be used on the S3.
 
 Wiring notes:
-- **MQ-2 AO can reach 5 V** when the module is powered from 5 V, which can damage the ESP32-S3 (its pins are 3.3 V only). Power the module from 3.3 V, or put a voltage divider (for example 10 k + 20 k) between AO and GPIO4.
+- **MQ-2 AO can reach 5 V** when the module is powered from 5 V, which can damage the ESP32 (its pins are 3.3 V only). Power the module from 3.3 V, or put a voltage divider (for example 10 k + 20 k) between AO and GPIO35.
 - Use a series resistor (about 220-330 ohm) for each LED. A bare DHT22 needs a pull-up (about 10 k) on its data line.
-- The PIR output is read as a digital input; check that its output level is 3.3 V.
+- The PIR output is read as a digital input (with a pull-down); check that its output level is 3.3 V.
+- GPIO12 (PIR LED) is a boot-strapping pin on the classic ESP32: it must be LOW at reset. An LED with a resistor to GND is fine; do not add a pull-up on it.
 
 ### Behaviour
 
-- **Local, always on** (works with no Wi-Fi, MQTT or backend): the PIR LED follows motion immediately. The MQ-2 is sampled and averaged, and the gas LED turns on when the averaged **raw** reading stays at or above `GAS_WARN_RAW` for 3 samples, and off again below `GAS_CLEAR_RAW` (hysteresis). During the first 60 s the MQ-2 heater is warming up: no warning, and no gas value is published.
+- **Local, always on** (works with no Wi-Fi, MQTT or backend): the PIR LED turns on as soon as motion is detected and stays on for 10 s after it stops (new motion restarts the 10 s). This timer is entirely local and the same in every security mode. The MQ-2 is sampled every 250 ms and averaged, and the gas LED turns on when the averaged **raw** reading stays at or above `GAS_WARN_RAW` for 2 samples, and off again below `GAS_CLEAR_RAW` (hysteresis). During the first 60 s the MQ-2 heater is warming up: no warning, and no gas value is published.
 - **Networking** runs on a separate core, so slow or failed connections never stall the sensors or LEDs. Wi-Fi retries back off from 1 s up to 60 s, MQTT from 2 s up to 120 s (each with 20% jitter, reset on success).
 - **Published every 30 s** to `home/devices/<deviceId>/telemetry`: `seq` (always increases, also across reboots), `ts` (only once NTP has set the clock), `temperature` and `humidity` (omitted if the DHT22 read failed or is older than 15 s), `motion` (true if motion occurred at any time since the last report), `gasRaw` (raw ADC counts, **never ppm**; omitted while warming up).
 - **Presence:** it connects with a Last Will `{"state":"offline"}` (retained) on its status topic and publishes `{"state":"online"}` (retained) after connecting.
 - **Remote LED commands:** it subscribes only to its own `.../commands` topic, and validates every command (UUID id, allow-listed action and value, clock set, not expired, expiry no more than 10 minutes away) before changing anything. It answers each one on `.../acks` (`applied`, `rejected` or `expired` with a reason), reports the resulting LED state on `.../state`, and remembers the last 16 command ids so a redelivered command is answered again but **never applied twice**. Remote commands can only change how the two LEDs are driven: the gas warning logic never reads them, the gas LED is always on during a gas warning (even if the PIR/gas mode says otherwise), `set_gas_led off` is refused, and a forced mode returns to `auto` after 1 hour or on reboot.
-- **Gas thresholds are placeholders** (`GAS_WARN_RAW = 2000`, `GAS_CLEAR_RAW = 1800` in `config.h`). They are raw ADC counts that depend on your sensor, supply voltage and warm-up age: measure your own clean-air and gas readings and set them (see the checklist). The original firmware was not available, so this LED and gas-warning behaviour was written from scratch; please compare it with what you expect and tell me what differs.
+- **Gas thresholds** are `GAS_WARN_RAW = 600` (on) and `GAS_CLEAR_RAW = 510` (off) in `config.h`. They are raw ADC counts that depend on your sensor, supply voltage and warm-up age: measure your own clean-air and gas readings and set them (see the checklist). The original firmware was not available, so this LED and gas-warning behaviour was written from scratch; please compare it with what you expect and tell me what differs.
 
 ### Pairing and credentials
 
@@ -685,7 +687,7 @@ Flash storage is not encrypted, so anyone with physical access to the board can 
 
 ### Build and flash
 
-One-time toolchain setup. Install Arduino CLI from https://arduino.github.io/arduino-cli/latest/installation/ (Arduino IDE 2 works the same, board "ESP32S3 Dev Module"). The ESP32 core is large: allow about 5 GB of free disk, and keep the install path short on Windows (very long paths break extraction). It was built here with `esp32:esp32` 3.3.12, DHT sensor library 1.4.7, Adafruit Unified Sensor 1.1.15, PubSubClient 2.8 and ArduinoJson 7.4.3.
+One-time toolchain setup. Install Arduino CLI from https://arduino.github.io/arduino-cli/latest/installation/ (Arduino IDE 2 works the same, board "ESP32 Dev Module"). The ESP32 core is large: allow about 5 GB of free disk, and keep the install path short on Windows (very long paths break extraction). It was built here with `esp32:esp32` 3.3.12, DHT sensor library 1.4.7, Adafruit Unified Sensor 1.1.15, PubSubClient 2.8 and ArduinoJson 7.4.3.
 
 ```powershell
 arduino-cli config init
@@ -709,12 +711,12 @@ Compile and flash (replace `COM5` with your port from `arduino-cli board list`):
 
 ```powershell
 cd ..\..
-arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\smarthome_esp32s3
-arduino-cli upload  --fqbn esp32:esp32:esp32s3 -p COM5 firmware\smarthome_esp32s3
+arduino-cli compile --fqbn esp32:esp32:esp32 firmware\smarthome_esp32s3
+arduino-cli upload  --fqbn esp32:esp32:esp32 -p COM5 firmware\smarthome_esp32s3
 arduino-cli monitor -p COM5 -c baudrate=115200
 ```
 
-Which USB port: on an ESP32-S3-DevKitC-1 use the **UART** port with the commands above. For the **native "USB" port** use `--fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc` so `Serial` appears on it. If upload fails, hold BOOT while pressing RESET and retry. In the Serial Monitor set the line ending to "Newline".
+The classic DevKit has one USB port (CP210x or CH340 USB-UART; install its driver if no COM port appears). If upload fails, hold BOOT while pressing RESET and retry. In the Serial Monitor set the line ending to "Newline".
 
 Unit tests for the logic (no hardware, needs a C++ compiler):
 
@@ -729,7 +731,7 @@ g++ -std=c++17 -I..\smarthome_esp32s3 -I<path to>\libraries\ArduinoJson\src comm
 
 Do these in order; each is something only the real board can confirm. Start the stack first (`docker compose up -d`, the backend, the frontend).
 
-1. **Senses with no network.** Flash with a wrong Wi-Fi password on purpose. The Serial log shows Wi-Fi retries with growing delays while `status` still shows sensor values. Wave a hand in front of the PIR: the PIR LED (GPIO12) lights immediately and goes out when motion stops.
+1. **Senses with no network.** Flash with a wrong Wi-Fi password on purpose. The Serial log shows Wi-Fi retries with growing delays while `status` still shows sensor values. Wave a hand in front of the PIR: the PIR LED (GPIO12) lights immediately and goes out 10 s after motion stops.
 2. **DHT22.** `status` shows plausible temperature and humidity. Breathe on it and both should rise. Unplug its data wire: after about 15 s they show `n/a`.
 3. **MQ-2 and the gas LED.** After the 60 s warm-up `status` no longer says "warming up". Note `gasRaw` in clean air. Briefly hold a gas source near it (a lighter with the gas released but **not lit**, a few cm away, in a ventilated place): `gasRaw` should rise. Set `GAS_WARN_RAW` clearly above clean air and below your gas peak, `GAS_CLEAR_RAW` a bit lower, reflash, and confirm the gas LED (GPIO13) lights with the gas and goes out after it clears, and stays off in clean air.
 4. **Pairing.** Put the correct Wi-Fi in `secrets.h` and reflash. Serial prints the device ID and "Not paired". In the web app choose Devices, Add device, then type the code in the Serial Monitor. Expect `[pair] Success` and then `MQTT connected; announced online.`. The web card should become **Online** with live values within about 30 s.

@@ -1,11 +1,13 @@
 package com.smarthome.twin;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 
@@ -36,6 +38,14 @@ public class TwinService {
 
 	private static final Set<CommandStatus> IN_FLIGHT = EnumSet.of(CommandStatus.PENDING, CommandStatus.SENT);
 	private static final Set<CommandStatus> PROBLEMS = EnumSet.of(CommandStatus.FAILED, CommandStatus.EXPIRED, CommandStatus.UNKNOWN);
+	/** Mirrors the firmware (config.h): a remote PIR "on" lasts PIR_LED_REMOTE_ON_MS, any forced mode OVERRIDE_MAX_MS. */
+	static final Duration PIR_ON_MAX = Duration.ofMinutes(2);
+	static final Duration OVERRIDE_MAX = Duration.ofHours(1);
+	/** Ack detail prefixes the firmware uses (Logic.h remotePirDetail) when a PIR "on" changed nothing. */
+	private static final String KEPT_AUTO = "kept auto";
+	private static final String KEPT_AUTO_OLD = "automatic 2-minute timer kept";   // firmware before the prefixes
+	private static final String NOT_RENEWED = "not renewed";
+	private static final String NOT_RENEWED_OLD = "timer not renewed";
 
 	private final DeviceService devices;
 	private final DeviceCommandRepository commands;
@@ -89,6 +99,23 @@ public class TwinService {
 		Boolean lit = rep == null ? null : (pir ? rep.pirLed().on() : rep.gasLed().on());
 		boolean stale = rep == null || rep.stale();
 		String desired = acked == null ? null : acked.getValue();
+		String expected = desired;
+		String expectedNote = "";
+		if (acked != null && !"auto".equals(desired)) {
+			// What the device should be doing NOW: forced modes are temporary on the device by design.
+			String detail = acked.getDetail() == null ? "" : acked.getDetail().toLowerCase(Locale.ROOT);
+			Instant since = appliedSince(mine, acked);
+			if (pir && "on".equals(desired) && (detail.startsWith(KEPT_AUTO) || detail.contains(KEPT_AUTO_OLD))) {
+				expected = "auto";
+				expectedNote = "The device kept its automatic mode because motion had already lit the LED; the LED follows its local timer.";
+			} else if (pir && "on".equals(desired) && !since.plus(PIR_ON_MAX).isAfter(now)) {
+				expected = "auto";
+				expectedNote = "The temporary \"on\" ended after 2 minutes, as designed; the device is back in automatic mode.";
+			} else if (!since.plus(OVERRIDE_MAX).isAfter(now)) {
+				expected = "auto";
+				expectedNote = "Forced modes return to automatic after 1 hour, as designed.";
+			}
+		}
 
 		SyncState sync;
 		String note;
@@ -104,19 +131,41 @@ public class TwinService {
 		} else if (unknownAfterAck) {
 			sync = SyncState.UNKNOWN;
 			note = "A later command was sent but never acknowledged; whether it took effect is unknown.";
-		} else if (desired.equals(reportedMode)) {
+		} else if (expected.equals(reportedMode)) {
 			sync = SyncState.IN_SYNC;
-			note = "";
+			note = expectedNote;
 		} else {
 			sync = SyncState.DRIFT;
-			note = "The device reports \"" + reportedMode + "\" but the last confirmed request was \"" + desired
-					+ "\". It may have restarted or been changed on the device.";
+			note = "The device reports \"" + reportedMode + "\" but the last confirmed request was \"" + desired + "\""
+					+ (expected.equals(desired) ? "" : " (expected now: \"" + expected + "\")")
+					+ ". It may have restarted or been changed on the device.";
 		}
 		if (!pir) {
 			note = (note.isEmpty() ? "" : note + " ") + "The gas warning itself is raised by the device and is not controlled from here.";
 		}
 		return new OutputTwin(o.action(), o.label(), desired, acked == null ? null : originLabel(acked.getOrigin()), acked == null ? null : acked.getCompletedAt() != null ? acked.getCompletedAt() : acked.getCreatedAt(),
-				inFlight == null ? null : inFlight.getValue(), reportedMode, lit, rep == null ? null : rep.reportedAt(), stale, sync, note.trim());
+				inFlight == null ? null : inFlight.getValue(), expected, reportedMode, lit, rep == null ? null : rep.reportedAt(), stale, sync,
+				note.trim());
+	}
+
+	/**
+	 * When the forced mode of {@code acked} really started on the device. A PIR "on" acknowledged as "not renewed" did not
+	 * restart the device's timer, so the clock runs from the earlier "on" that did.
+	 */
+	private static Instant appliedSince(List<DeviceCommand> mine, DeviceCommand acked) {
+		for (DeviceCommand c : mine) {                                  // newest first
+			if (c.getStatus() != CommandStatus.ACKNOWLEDGED || c.getCreatedAt().isAfter(acked.getCreatedAt())) {
+				continue;
+			}
+			String d = c.getDetail() == null ? "" : c.getDetail().toLowerCase(Locale.ROOT);
+			if (!c.getValue().equals(acked.getValue())) {
+				break;                                                  // an earlier, different mode: stop looking
+			}
+			if (!(d.startsWith(NOT_RENEWED) || d.contains(NOT_RENEWED_OLD))) {
+				return c.getCompletedAt() != null ? c.getCompletedAt() : c.getCreatedAt();
+			}
+		}
+		return acked.getCompletedAt() != null ? acked.getCompletedAt() : acked.getCreatedAt();
 	}
 
 	private static String originLabel(String origin) {

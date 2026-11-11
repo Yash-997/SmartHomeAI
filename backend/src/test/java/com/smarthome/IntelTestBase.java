@@ -95,6 +95,12 @@ abstract class IntelTestBase extends MlTestBase {
 		commandIngest.handle("home/devices/" + p.deviceId() + "/acks", json.getBytes(StandardCharsets.UTF_8), false);
 	}
 
+	/** Same, with the firmware's detail text (e.g. "kept auto: ..." when a PIR "on" changed nothing). */
+	void ack(Paired p, UUID commandId, String status, String detail) {
+		String json = "{\"id\":\"" + commandId + "\",\"status\":\"" + status + "\",\"detail\":\"" + detail + "\"}";
+		commandIngest.handle("home/devices/" + p.deviceId() + "/acks", json.getBytes(StandardCharsets.UTF_8), false);
+	}
+
 	UUID sendCommand(Paired p, String action, String value) throws Exception {
 		String res = postAs(p.token(), "/api/devices/" + p.uuid() + "/commands", "{\"action\":\"" + action + "\",\"value\":\"" + value + "\"}")
 				.andExpect(status().isAccepted()).andReturn().getResponse().getContentAsString();

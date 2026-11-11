@@ -7,7 +7,11 @@ import org.springframework.mail.MailException;
 import org.springframework.mail.MailSendException;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Component;
+
+import jakarta.mail.MessagingException;
+import jakarta.mail.internet.MimeMessage;
 
 /**
  * Gmail SMTP (smtp.gmail.com:587, STARTTLS) through Spring's JavaMailSender. The account comes from MAIL_USERNAME and a
@@ -49,13 +53,42 @@ public class SmtpAlertMailer implements AlertMailer {
 		msg.setText(body);
 		try {
 			mail.send(msg);
-		} catch (MailAuthenticationException e) {
-			throw new MailDeliveryException("SMTP login was rejected. Check MAIL_USERNAME and the Google App Password.");
-		} catch (MailSendException e) {
-			Throwable cause = e.getMostSpecificCause();
-			throw new MailDeliveryException("SMTP send failed (" + cause.getClass().getSimpleName() + ").");
 		} catch (MailException e) {
-			throw new MailDeliveryException("Email could not be sent (" + e.getClass().getSimpleName() + ").");
+			throw safe(e);
 		}
+	}
+
+	/** HTML with a plain-text alternative, UTF-8. Same secret-free error reporting as plain text. */
+	@Override
+	public void send(EmailContent email, String to) throws MailDeliveryException {
+		JavaMailSender mail = sender.getIfAvailable();
+		if (!configured || mail == null) {
+			throw new MailDeliveryException("Email is not configured (MAIL_USERNAME / MAIL_PASSWORD).");
+		}
+		MimeMessage msg = mail.createMimeMessage();
+		try {
+			MimeMessageHelper h = new MimeMessageHelper(msg, MimeMessageHelper.MULTIPART_MODE_MIXED_RELATED, "UTF-8");
+			h.setFrom(from);
+			h.setTo(to);
+			h.setSubject(email.subject());
+			h.setText(email.text(), email.html());
+		} catch (MessagingException e) {
+			throw new MailDeliveryException("Email could not be built (" + e.getClass().getSimpleName() + ").");
+		}
+		try {
+			mail.send(msg);
+		} catch (MailException e) {
+			throw safe(e);
+		}
+	}
+
+	private static MailDeliveryException safe(MailException e) {
+		if (e instanceof MailAuthenticationException) {
+			return new MailDeliveryException("SMTP login was rejected. Check MAIL_USERNAME and the Google App Password.");
+		}
+		if (e instanceof MailSendException send) {
+			return new MailDeliveryException("SMTP send failed (" + send.getMostSpecificCause().getClass().getSimpleName() + ").");
+		}
+		return new MailDeliveryException("Email could not be sent (" + e.getClass().getSimpleName() + ").");
 	}
 }
