@@ -48,20 +48,23 @@ public class AnomalyScanner {
 	private final DeviceService deviceService;
 	private final MlSampleRepository samples;
 	private final AnomalyService anomalies;
+	private final OccupancyService occupancy;
 	private final MlProperties props;
 	private final Clock clock;
 	private final Map<UUID, Instant> watermark = new ConcurrentHashMap<>();
+	private final Map<UUID, Instant> motionWatermark = new ConcurrentHashMap<>();
 	private final Map<UUID, Instant> lastScan = new ConcurrentHashMap<>();
 	private final Map<UUID, Instant> lastManual = new ConcurrentHashMap<>();
 	private final Map<UUID, CachedBaselines> baselineCache = new ConcurrentHashMap<>();
 	private final Map<UUID, Object> deviceLocks = new ConcurrentHashMap<>();
 
 	public AnomalyScanner(DeviceRepository devices, DeviceService deviceService, MlSampleRepository samples, AnomalyService anomalies,
-			MlProperties props, Clock clock) {
+			OccupancyService occupancy, MlProperties props, Clock clock) {
 		this.devices = devices;
 		this.deviceService = deviceService;
 		this.samples = samples;
 		this.anomalies = anomalies;
+		this.occupancy = occupancy;
 		this.props = props;
 		this.clock = clock;
 	}
@@ -142,15 +145,69 @@ public class AnomalyScanner {
 						if (bad.isPresent() && anomalies.raise(deviceUuid, bad.get(), now).isPresent()) {
 							raised++;
 						}
+						// A jump from the previous reading, judged against how much this sensor usually changes.
+						Optional<Finding> jump = AnomalyDetectors.suddenChange(m, previousWith(m, recent, s), s, baselines.delta(m), cfg);
+						if (jump.isPresent() && anomalies.raise(deviceUuid, jump.get(), now).isPresent()) {
+							raised++;
+						}
 					}
 				}
 			}
 			watermark.put(deviceUuid, recent.get(0).at());
+			raised += unusualActivity(deviceUuid, now, firstLookback);
 
 			anomalies.autoResolveInactive(deviceUuid, CONDITION_KINDS, active, now);
 			anomalies.autoResolveQuiet(deviceUuid, now);
 			return raised;
 		}
+	}
+
+	/** The newest reading older than {@code s} that has a value for this sensor (recent is newest first), or null. */
+	private static SensorSample previousWith(Metric m, List<SensorSample> recent, SensorSample s) {
+		boolean past = false;
+		for (SensorSample r : recent) {
+			if (past && m.of(r) != null) {
+				return r;
+			}
+			if (r == s) {
+				past = true;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Motion reports since the last scan, checked against the learned household pattern. Only with a READY model:
+	 * without one, nothing is judged (there is no "normal" to compare with).
+	 */
+	private int unusualActivity(UUID deviceUuid, Instant now, Duration firstLookback) {
+		Instant since = motionWatermark.getOrDefault(deviceUuid, now.minus(firstLookback));
+		List<MotionSample> motion = samples.findMotionSamples(deviceUuid, since, PageRequest.of(0, props.anomaly().maxNewReadingsPerScan()));
+		if (motion.isEmpty()) {
+			return 0;
+		}
+		motionWatermark.put(deviceUuid, motion.get(0).at());
+		List<MotionSample> fresh = motion.stream().filter(s -> s.motion() && s.at().isAfter(since)).toList();
+		if (fresh.isEmpty()) {
+			return 0;
+		}
+		Optional<OccupancyModel> model = occupancy.readyModel(deviceUuid);
+		if (model.isEmpty()) {
+			return 0;
+		}
+		OccupancyModel om = model.get();
+		java.time.ZoneId zone = java.time.ZoneId.of(om.timeZone());
+		int raised = 0;
+		for (int i = fresh.size() - 1; i >= 0; i--) {                       // oldest first
+			MotionSample s = fresh.get(i);
+			java.time.ZonedDateTime local = s.at().atZone(zone);
+			Optional<Finding> f = AnomalyDetectors.unusualActivity(local, s.at(), om.probability(local), om.observedRate(local), om.support(local),
+					props.anomaly());
+			if (f.isPresent() && anomalies.raise(deviceUuid, f.get(), now).isPresent()) {
+				raised++;
+			}
+		}
+		return raised;
 	}
 
 	private boolean raise(UUID deviceUuid, Finding f, Instant now, Set<String> active) {
@@ -175,6 +232,7 @@ public class AnomalyScanner {
 	/** Forgets cached state for a device (used when it is disowned, and by tests). */
 	public void forget(UUID deviceUuid) {
 		watermark.remove(deviceUuid);
+		motionWatermark.remove(deviceUuid);
 		lastScan.remove(deviceUuid);
 		lastManual.remove(deviceUuid);
 		baselineCache.remove(deviceUuid);

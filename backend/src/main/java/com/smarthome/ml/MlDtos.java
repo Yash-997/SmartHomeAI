@@ -34,17 +34,57 @@ public final class MlDtos {
 			String evaluation) {
 	}
 
-	/** A cheap look at stored data, available even before any training. */
-	public record DataSummary(long motionReadings, Instant firstAt, Instant lastAt) {
+	/**
+	 * The training dataset as it would be built right now from stored readings (same rules as training). Recomputed at
+	 * most every few minutes; {@code checkedAt} says when.
+	 */
+	public record DatasetSnapshot(int usableSlots, int slotsWithMotion, int slotsWithoutMotion, int sparseSlotsIgnored, int distinctDays,
+			boolean enoughForTraining, Instant checkedAt) {
 	}
 
 	/**
-	 * state: NOT_TRAINED, INSUFFICIENT_DATA, READY or LOW_QUALITY. {@code message} always says in plain words what is
-	 * going on. {@code metrics} is null unless a model was evaluated.
+	 * What has been collected for this device. {@code totalRecords}: every stored telemetry message (all sensors);
+	 * {@code collectionStartedAt}: the first one. {@code motionReadings}, {@code firstAt}, {@code lastAt}: messages that
+	 * carried a motion value, which is what occupancy learning uses.
+	 */
+	public record DataSummary(long totalRecords, Instant collectionStartedAt, long recordsLast24h, long motionReadings, Instant firstAt,
+			Instant lastAt, DatasetSnapshot dataset) {
+	}
+
+	/**
+	 * state: NOT_TRAINED, INSUFFICIENT_DATA, READY or LOW_QUALITY. {@code collecting} is true while there is no usable
+	 * model yet (the dashboard then says "Collecting historical data"). {@code message} always says in plain words what is
+	 * going on. {@code metrics} is null unless a model was evaluated. {@code modelVersion} is 0 before the first model.
 	 */
 	public record OccupancyStatusResponse(String state, boolean predictionsAvailable, String message, Instant trainedAt,
 			String timeZone, CountsResponse counts, RequirementsResponse requirements, MetricsResponse metrics, DataSummary data,
-			String method) {
+			String method, boolean collecting, int modelVersion, Instant lastSuccessfulTrainingAt, long trainingRuns, String featureSet,
+			boolean autoTraining) {
+	}
+
+	/** One training run from the history. {@code version} is null when the run produced no model. */
+	public record TrainingRunResponse(UUID id, Integer version, String trigger, String status, String reason, boolean becameCurrent,
+			Instant trainedAt, long durationMs, String timeZone, String featureSet, int samples, int usableSlots, int slotsWithMotion,
+			int distinctDays, Instant dataFrom, Instant dataTo, MetricsResponse metrics) {
+	}
+
+	/**
+	 * One hour of the week in the learned pattern. dayOfWeek: 1 = Monday ... 7 = Sunday. {@code slots}: training slots in
+	 * that hour; {@code observedRate}: share of them with motion (null with none); {@code modelProbability}: what the
+	 * current model predicts for the middle of that hour.
+	 */
+	public record PatternCell(int dayOfWeek, int hour, int slots, Double observedRate, double modelProbability) {
+	}
+
+	public record PatternResponse(String timeZone, int modelVersion, String quality, Instant trainedAt, double overallRate,
+			List<PatternCell> cells) {
+	}
+
+	/** One change in connectivity. state: ONLINE or OFFLINE. */
+	public record StatusEventResponse(String state, String reason, Instant changedAt, Instant lastSeenAt) {
+	}
+
+	public record ConnectivityResponse(String currentState, long offlineEventsLast7Days, List<StatusEventResponse> events) {
 	}
 
 	/**

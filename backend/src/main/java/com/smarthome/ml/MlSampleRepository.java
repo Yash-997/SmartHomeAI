@@ -38,4 +38,14 @@ public interface MlSampleRepository extends Repository<TelemetryReading, Long> {
 
 	@Query("select count(r) from TelemetryReading r where r.deviceUuid = :device and r.receivedAt > :after and r.motion is not null")
 	long countMotionSamplesAfter(@Param("device") UUID device, @Param("after") Instant after);
+
+	/** Every stored message of the device, whatever sensors it carried. */
+	@Query("select count(r) from TelemetryReading r where r.deviceUuid = :device")
+	long countAll(@Param("device") UUID device);
+
+	@Query("select count(r) from TelemetryReading r where r.deviceUuid = :device and r.receivedAt > :after")
+	long countAllAfter(@Param("device") UUID device, @Param("after") Instant after);
+
+	@Query("select min(r.receivedAt) from TelemetryReading r where r.deviceUuid = :device")
+	Instant firstReadingAt(@Param("device") UUID device);
 }

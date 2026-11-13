@@ -56,6 +56,107 @@ static uint32_t wifiStateSince = 0, wifiWaitMs = 0;
 
 static uint32_t lastRadioStartMs = 0;   // millis() of the last Wi-Fi (re)connect attempt (for the PIR diagnostics)
 
+// ---- Wi-Fi diagnostics (read-only: they report what happens, they do not change how the device connects) ----------
+// The connection runs in three steps, and the events below show how far it got:
+//   1. scan + 802.11 authentication + association + WPA2 4-way handshake  -> STA_CONNECTED   (else DISCONNECTED + reason)
+//   2. DHCP                                                                -> STA_GOT_IP
+static volatile uint8_t wifiLastReason = 0;      // last disconnect reason of the current attempt (0 = none)
+static volatile bool wifiLinkUp = false;         // STA_CONNECTED seen in the current attempt (step 1 passed)
+
+static const char* authModeName(wifi_auth_mode_t m) {
+  switch (m) {
+    case WIFI_AUTH_OPEN:          return "OPEN";
+    case WIFI_AUTH_WEP:           return "WEP";
+    case WIFI_AUTH_WPA_PSK:       return "WPA-PSK";
+    case WIFI_AUTH_WPA2_PSK:      return "WPA2-PSK";
+    case WIFI_AUTH_WPA_WPA2_PSK:  return "WPA/WPA2-PSK";
+    case WIFI_AUTH_WPA3_PSK:      return "WPA3-PSK";
+    case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/WPA3-PSK";
+    default:                      return "other";
+  }
+}
+
+static const char* reasonPhase(uint8_t r) {
+  switch (r) {
+    case WIFI_REASON_NO_AP_FOUND:
+    case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+    case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:  return "scan (no acceptable AP with this SSID)";
+    case WIFI_REASON_AUTH_EXPIRE:
+    case WIFI_REASON_AUTH_FAIL:                      return "authentication";
+    case WIFI_REASON_ASSOC_EXPIRE:
+    case WIFI_REASON_ASSOC_TOOMANY:
+    case WIFI_REASON_ASSOC_FAIL:                     return "association";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_MIC_FAILURE:                    return "WPA2 key handshake (usually wrong password)";
+    case WIFI_REASON_BEACON_TIMEOUT:                 return "link lost (AP beacons stopped)";
+    case WIFI_REASON_ASSOC_LEAVE:                    return "disconnect requested by this device";
+    default:                                         return "other";
+  }
+}
+
+static void onWifiEvent(arduino_event_id_t event, arduino_event_info_t info) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED: {
+      const auto& c = info.wifi_sta_connected;
+      wifiLinkUp = true;
+      Serial.printf("[net] Wi-Fi step 1 OK (auth + association + key handshake): BSSID %02x:%02x:%02x:%02x:%02x:%02x, "
+                    "channel %u, %s; waiting for DHCP\n", c.bssid[0], c.bssid[1], c.bssid[2], c.bssid[3], c.bssid[4],
+                    c.bssid[5], c.channel, authModeName(c.authmode));
+      break;
+    }
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
+      const auto& d = info.wifi_sta_disconnected;
+      wifiLastReason = d.reason;
+      wifiLinkUp = false;
+      Serial.printf("[net] Wi-Fi disconnected: reason %u %s, phase: %s, RSSI %d dBm\n", d.reason,
+                    WiFi.disconnectReasonName((wifi_err_reason_t)d.reason), reasonPhase(d.reason), d.rssi);
+      break;
+    }
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP: {
+      const auto& ip = info.got_ip.ip_info;
+      Serial.printf("[net] Wi-Fi step 2 OK (DHCP): IP " IPSTR ", gateway " IPSTR ", mask " IPSTR "\n", IP2STR(&ip.ip),
+                    IP2STR(&ip.gw), IP2STR(&ip.netmask));
+      break;
+    }
+    case ARDUINO_EVENT_WIFI_STA_LOST_IP:
+      Serial.println("[net] Wi-Fi: DHCP lease lost");
+      break;
+    default:
+      break;
+  }
+}
+
+/** Lists every access point broadcasting our SSID (and near-misses that differ only in case or spaces). */
+static void logMatchingAccessPoints() {
+  const int n = WiFi.scanNetworks(false, true);
+  if (n < 0) {
+    Serial.printf("[net] Wi-Fi scan failed (%d)\n", n);
+    return;
+  }
+  String wanted = WIFI_SSID;
+  wanted.trim();
+  wanted.toLowerCase();
+  int matches = 0;
+  for (int i = 0; i < n; i++) {
+    const String ssid = WiFi.SSID(i);
+    String folded = ssid;
+    folded.trim();
+    folded.toLowerCase();
+    if (ssid != WIFI_SSID && folded != wanted) continue;
+    const wifi_auth_mode_t auth = WiFi.encryptionType(i);
+    if (ssid == WIFI_SSID) matches++;
+    Serial.printf("[net]   %s \"%s\" BSSID %s  ch %ld  RSSI %ld dBm  %s%s\n", ssid == WIFI_SSID ? "match" : "NEAR-MISS (case/space differs)",
+                  ssid.c_str(), WiFi.BSSIDstr(i).c_str(), (long)WiFi.channel(i), (long)WiFi.RSSI(i), authModeName(auth),
+                  (auth == WIFI_AUTH_OPEN || auth == WIFI_AUTH_WEP || auth == WIFI_AUTH_WPA_PSK)
+                      ? "  <- below the WPA2 minimum the ESP32 core accepts" : "");
+  }
+  Serial.printf("[net] Wi-Fi scan: %d network(s) seen, %d broadcasting \"%s\"%s\n", n, matches, WIFI_SSID,
+                matches > 1 ? " (more than one AP uses this name)" : "");
+  WiFi.scanDelete();
+}
+
 static void maintainWifi() {
   const uint32_t now = millis();
   switch (wifiState) {
@@ -63,6 +164,9 @@ static void maintainWifi() {
       Serial.printf("[net] Wi-Fi: connecting to \"%s\"\n", WIFI_SSID);
       WiFi.mode(WIFI_STA);
       WiFi.setAutoReconnect(false);  // we do our own back-off
+      logMatchingAccessPoints();
+      wifiLastReason = 0;
+      wifiLinkUp = false;
       WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
       lastRadioStartMs = millis();
       wifiState = WifiState::Connecting;
@@ -75,6 +179,18 @@ static void maintainWifi() {
         wifiBackoff.reset();
         Serial.printf("[net] Wi-Fi connected, IP %s\n", WiFi.localIP().toString().c_str());
       } else if (now - wifiStateSince > WIFI_CONNECT_TIMEOUT_MS) {
+        // Summarise where this attempt stopped before tearing it down (the disconnect below adds reason 8, ignore it).
+        const uint8_t reason = wifiLastReason;
+        if (wifiLinkUp) {
+          Serial.printf("[net] Wi-Fi attempt stopped at step 2: associated, but no DHCP lease within %lu s\n",
+                        (unsigned long)(WIFI_CONNECT_TIMEOUT_MS / 1000));
+        } else if (reason) {
+          Serial.printf("[net] Wi-Fi attempt stopped at step 1: last reason %u %s (%s)\n", reason,
+                        WiFi.disconnectReasonName((wifi_err_reason_t)reason), reasonPhase(reason));
+        } else {
+          Serial.printf("[net] Wi-Fi attempt stopped at step 1: no connect or disconnect event within %lu s (status %d)\n",
+                        (unsigned long)(WIFI_CONNECT_TIMEOUT_MS / 1000), (int)WiFi.status());
+        }
         WiFi.disconnect(true);
         wifiWaitMs = wifiBackoff.nextDelay(esp_random());
         Serial.printf("[net] Wi-Fi connect failed; retrying in %lu ms (sensors keep running locally)\n", (unsigned long)wifiWaitMs);
@@ -87,7 +203,8 @@ static void maintainWifi() {
       if (WiFi.status() != WL_CONNECTED) {
         mqtt.disconnect();
         wifiWaitMs = wifiBackoff.nextDelay(esp_random());
-        Serial.printf("[net] Wi-Fi lost; retrying in %lu ms\n", (unsigned long)wifiWaitMs);
+        Serial.printf("[net] Wi-Fi lost (reason %u %s); retrying in %lu ms\n", wifiLastReason,
+                      WiFi.disconnectReasonName((wifi_err_reason_t)wifiLastReason), (unsigned long)wifiWaitMs);
         wifiState = WifiState::Waiting;
         wifiStateSince = now;
       }
@@ -135,8 +252,37 @@ static bool pairWithCode(const char* code8) {
   http.end();
 
   if (status <= 0) {
-    Serial.printf("[pair] Could not reach the backend at %s (%s). Check API_BASE_URL in secrets.h.\n", API_BASE_URL,
-                  HTTPClient::errorToString(status).c_str());
+    // The library reports every failed TCP connect as "connection refused" (-1): a reset, a timeout and "no route" look
+    // the same. Say so, show the network facts, and probe the TCP port once so the log tells those cases apart.
+    Serial.printf("[pair] HTTP request failed: %s (code %d). The TCP connection to %s could not be completed; that covers a refusal, a timeout and an unreachable host.\n",
+                  HTTPClient::errorToString(status).c_str(), status, API_BASE_URL);
+    Serial.printf("[pair] This device: IP %s, gateway %s, Wi-Fi signal %d dBm.\n", WiFi.localIP().toString().c_str(),
+                  WiFi.gatewayIP().toString().c_str(), (int)WiFi.RSSI());
+    String host = String(API_BASE_URL);
+    host.replace("http://", "");
+    int slash = host.indexOf('/');
+    if (slash >= 0) host.remove(slash);
+    uint16_t port = 80;
+    int colon = host.lastIndexOf(':');
+    if (colon >= 0) {
+      port = (uint16_t)host.substring(colon + 1).toInt();
+      host.remove(colon);
+    }
+    WiFiClient probe;
+    const uint32_t t0 = millis();
+    const bool ok = probe.connect(host.c_str(), port, 3000);
+    const uint32_t took = millis() - t0;
+    probe.stop();
+    if (ok) {
+      Serial.printf("[pair] TCP probe to %s:%u succeeded in %lu ms, so the port is reachable now. Retry the same code; if it keeps failing, check the backend logs.\n",
+                    host.c_str(), (unsigned)port, (unsigned long)took);
+    } else if (took >= 2900) {
+      Serial.printf("[pair] TCP probe to %s:%u timed out after %lu ms: packets are being dropped (router client/band isolation, a firewall, or a wrong IP). Check API_BASE_URL and that the PC is on the same network.\n",
+                    host.c_str(), (unsigned)port, (unsigned long)took);
+    } else {
+      Serial.printf("[pair] TCP probe to %s:%u failed after %lu ms: the host answered but nothing accepts connections on that port (or it was reset). Check the backend is running and its published port.\n",
+                    host.c_str(), (unsigned)port, (unsigned long)took);
+    }
     return false;
   }
 
@@ -200,13 +346,17 @@ static void printHelp() {
   Serial.println("  gas              60 s of REAL MQ-2 readings, 4 per second");
   Serial.println("  ledtest          SIMULATED high then low gas reading: the red LED must turn on, then off");
   Serial.println("  pir              10 min log of the PIR pin (type again to stop)");
+#if PIR_DEBUG_ENABLED
   Serial.println("  pirdebug         turn the once-a-second [PIR DEBUG] line on/off");
+#endif
 }
 
 static void runGasTest();
 static void runLedTest();
 static void togglePirTest();
+#if PIR_DEBUG_ENABLED
 static void togglePirDebug();
+#endif
 
 static void handleLine(String line) {
   line.trim();
@@ -219,7 +369,9 @@ static void handleLine(String line) {
   if (lower == "gas") { runGasTest(); return; }
   if (lower == "ledtest") { runLedTest(); return; }
   if (lower == "pir") { togglePirTest(); return; }
+#if PIR_DEBUG_ENABLED
   if (lower == "pirdebug") { togglePirDebug(); return; }
+#endif
   if (lower == "reset") {
     prefs.remove("cred");
     credential = "";
@@ -494,6 +646,27 @@ static void runLedTest() {
                 end.gasMode == LedMode::On ? " (note: gas LED is forced ON from the dashboard; set it to Auto)" : "");
 }
 
+// PIR state changes only: one short line when motion starts, one when it clears, and one when the start-up warm-up ends.
+// Reads the same filtered state the rest of the firmware uses; it never changes it.
+static void servicePirLog() {
+  static bool initialised = false, lastMotion = false, lastWarming = false;
+  const Snapshot s = sensorsSnapshot();
+  if (!initialised) {
+    initialised = true;
+    lastMotion = s.motionNow;
+    lastWarming = s.pirWarmingUp;
+    if (s.pirWarmingUp) Serial.printf("[pir] GPIO%u sensor warming up; motion is ignored until it settles\n", (unsigned)PIN_PIR);
+    return;
+  }
+  if (lastWarming && !s.pirWarmingUp) Serial.printf("[pir] GPIO%u sensor ready\n", (unsigned)PIN_PIR);
+  lastWarming = s.pirWarmingUp;
+  if (s.motionNow != lastMotion) {
+    lastMotion = s.motionNow;
+    Serial.println(s.motionNow ? "[pir] motion detected" : "[pir] motion cleared");
+  }
+}
+
+#if PIR_DEBUG_ENABLED
 // [PIR DEBUG] once a second: every stage from the PIR input (GPIO26) to the PIR LED (GPIO12), so a stuck input can be
 // told apart from a software or remote-command cause. Also counts PIR triggers that come right after a Wi-Fi connect
 // attempt (radio bursts and the supply dip they cause are a known cause of false PIR triggers).
@@ -527,6 +700,8 @@ static void servicePirDebug() {
                 s.pirMode == LedMode::On ? " (remote command, e.g. Security Away 'light on motion'; returns to AUTO within 2 min)" : "");
   if (s.pirStuckHigh) Serial.printf("[PIR DEBUG] WARNING: GPIO%u has been HIGH without a break for 10+ minutes.\n", (unsigned)PIN_PIR);
 }
+
+#endif  // PIR_DEBUG_ENABLED
 
 static bool pirTestOn = false, pirTestLastRaw = false;
 static uint32_t pirTestStart = 0, pirTestNextSummary = 0, pirTestRises0 = 0, pirTestHigh0 = 0;
@@ -582,7 +757,10 @@ static void networkTask(void*) {
     maintainTime();
     warnIfSensorStuck();
     servicePirTest();
+    servicePirLog();
+#if PIR_DEBUG_ENABLED
     servicePirDebug();
+#endif
 
     if (credential.isEmpty()) {
       if (wifiUp() && millis() - lastReminder > 30000) {
@@ -641,6 +819,8 @@ void networkBegin() {
 
   Serial.printf("\n[net] Device ID: %s  (%s)\n", deviceId, credential.length() ? "paired" : "NOT paired");
   if (credential.isEmpty()) printHelp();
+
+  WiFi.onEvent(onWifiEvent);  // connection diagnostics (see onWifiEvent)
 
   // Pinned to core 0; Arduino's loop() (sensors, LEDs) runs on core 1 and is never blocked by network calls.
   xTaskCreatePinnedToCore(networkTask, "net", 12288, nullptr, 1, nullptr, 0);

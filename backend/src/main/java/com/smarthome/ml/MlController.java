@@ -17,6 +17,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.smarthome.ml.MlDtos.AnomalyResponse;
+import com.smarthome.ml.MlDtos.ConnectivityResponse;
+import com.smarthome.ml.MlDtos.PatternResponse;
+import com.smarthome.ml.MlDtos.TrainingRunResponse;
 import com.smarthome.ml.MlDtos.ForecastResponse;
 import com.smarthome.ml.MlDtos.MlStatusResponse;
 import com.smarthome.ml.MlDtos.OccupancyStatusResponse;
@@ -37,11 +40,13 @@ public class MlController {
 	private final OccupancyService occupancy;
 	private final AnomalyService anomalies;
 	private final AnomalyScanner scanner;
+	private final DataCollectionService collection;
 
-	public MlController(OccupancyService occupancy, AnomalyService anomalies, AnomalyScanner scanner) {
+	public MlController(OccupancyService occupancy, AnomalyService anomalies, AnomalyScanner scanner, DataCollectionService collection) {
 		this.occupancy = occupancy;
 		this.anomalies = anomalies;
 		this.scanner = scanner;
+		this.collection = collection;
 	}
 
 	private static UUID userId(Jwt jwt) {
@@ -59,6 +64,26 @@ public class MlController {
 	public OccupancyStatusResponse train(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId,
 			@RequestParam(required = false) String timeZone) {
 		return occupancy.trainManually(userId(jwt), deviceId, timeZone);
+	}
+
+	/** Training history, newest first: every manual and automatic run, with its version, data and evaluation. */
+	@GetMapping("/occupancy/runs")
+	public List<TrainingRunResponse> runs(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId,
+			@RequestParam(defaultValue = "20") int limit) {
+		return occupancy.runs(userId(jwt), deviceId, limit);
+	}
+
+	/** The learned weekly pattern (168 hours). 409 until a model exists. */
+	@GetMapping("/occupancy/pattern")
+	public PatternResponse pattern(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId) {
+		return occupancy.pattern(userId(jwt), deviceId);
+	}
+
+	/** Connectivity history (online/offline changes), newest first. */
+	@GetMapping("/connectivity")
+	public ConnectivityResponse connectivity(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId,
+			@RequestParam(defaultValue = "20") int limit) {
+		return collection.connectivity(userId(jwt), deviceId, limit);
 	}
 
 	@GetMapping("/occupancy/predict")

@@ -19,6 +19,8 @@ import jakarta.persistence.Table;
 public class MlModel {
 
 	public static final String OCCUPANCY = "OCCUPANCY";
+	/** A demonstration model trained on a generated dataset. Never used for the device's real predictions. */
+	public static final String OCCUPANCY_SYNTHETIC = "OCCUPANCY_SYNTH";
 
 	@Id
 	private UUID id;
@@ -70,14 +72,24 @@ public class MlModel {
 	@Column(name = "metrics_json", length = 2000)
 	private String metricsJson;
 
+	/** 0 until the first model; +1 every time a training run produces a new current model. */
+	@Column(nullable = false)
+	private int version;
+
 	protected MlModel() {
 	}
 
 	public MlModel(UUID deviceUuid) {
+		this(deviceUuid, OCCUPANCY);
+	}
+
+	public MlModel(UUID deviceUuid, String modelType) {
 		this.id = UUID.randomUUID();
 		this.deviceUuid = deviceUuid;
-		this.modelType = OCCUPANCY;
+		this.modelType = modelType;
 	}
+
+	public String getModelType() { return modelType; }
 
 	/** Replaces everything with the outcome of a training run. */
 	public void record(OccupancyTrainer.Result r, String zone, int bucketMinutes, String modelJson, String metricsJson, Instant now) {
@@ -94,6 +106,9 @@ public class MlModel {
 		this.distinctDays = r.counts().distinctDays();
 		this.modelJson = modelJson;
 		this.metricsJson = metricsJson;
+		if (modelJson != null) {
+			this.version++;
+		}
 	}
 
 	public boolean hasModel() {
@@ -115,4 +130,5 @@ public class MlModel {
 	public int getDistinctDays() { return distinctDays; }
 	public String getModelJson() { return modelJson; }
 	public String getMetricsJson() { return metricsJson; }
+	public int getVersion() { return version; }
 }

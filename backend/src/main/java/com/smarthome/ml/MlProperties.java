@@ -12,7 +12,18 @@ import org.springframework.boot.context.properties.source.MapConfigurationProper
  * The thresholds are the "how much data is enough" rules: below them the system says so instead of guessing.
  */
 @ConfigurationProperties(prefix = "app.ml")
-public record MlProperties(@DefaultValue Occupancy occupancy, @DefaultValue Training training, @DefaultValue Anomaly anomaly) {
+public record MlProperties(@DefaultValue Occupancy occupancy, @DefaultValue Training training, @DefaultValue Anomaly anomaly,
+		/** Local time used for "time of day" when training automatically or when no zone is given (IANA name). */
+		@DefaultValue("Asia/Kolkata") String defaultTimeZone) {
+
+	/** The configured default zone, or UTC if the setting is not a valid zone name. */
+	public java.time.ZoneId zone() {
+		try {
+			return java.time.ZoneId.of(defaultTimeZone == null || defaultTimeZone.isBlank() ? "UTC" : defaultTimeZone.trim());
+		} catch (RuntimeException e) {
+			return java.time.ZoneOffset.UTC;
+		}
+	}
 
 	/** Occupancy model: how history is turned into training examples, and how much is enough. */
 	public record Occupancy(
@@ -93,7 +104,20 @@ public record MlProperties(@DefaultValue Occupancy occupancy, @DefaultValue Trai
 			@DefaultValue("10") int minManualScanIntervalSeconds,
 			/** Readings fetched per scan for the stuck / missing checks. */
 			@DefaultValue("120") int recentWindow,
-			@DefaultValue("50") int maxNewReadingsPerScan) {
+			@DefaultValue("50") int maxNewReadingsPerScan,
+			/** Sudden change: a jump between consecutive readings, scored against the history of such jumps (robust z). */
+			@DefaultValue("6.0") double suddenWarnZ,
+			@DefaultValue("10.0") double suddenCriticalZ,
+			/** Only readings at most this far apart count as "consecutive". */
+			@DefaultValue("300") int suddenMaxGapSeconds,
+			/** Minimum consecutive pairs in the history before jumps are judged at all. */
+			@DefaultValue("200") int minDeltaSamples,
+			/** Unusual activity: motion in an hour of the week where the history shows motion at most this often... */
+			@DefaultValue("0.10") double quietHourMaxRate,
+			/** ...and the trained model gives at most this probability... */
+			@DefaultValue("0.15") double quietHourMaxProbability,
+			/** ...backed by at least this many past slots of that hour. */
+			@DefaultValue("8") int quietHourMinSupport) {
 	}
 
 	/** Defaults exactly as Spring would bind them with no configuration. Handy for unit tests. */

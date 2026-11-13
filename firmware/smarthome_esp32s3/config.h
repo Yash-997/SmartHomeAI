@@ -104,7 +104,13 @@ constexpr uint32_t PIR_LED_HOLD_MS      = 10000;   // 10 seconds
 // A remote "on" for the PIR LED (e.g. Security Away "light on motion") lasts at most this long, then Auto takes over.
 // Security re-sends "on" per motion report, so the LED stays on while motion continues and goes off when it stops.
 constexpr uint32_t PIR_LED_REMOTE_ON_MS = 120000;
-constexpr bool     PIR_DEBUG_DEFAULT = true;     // print a [PIR DEBUG] line every PIR_DEBUG_INTERVAL_MS (toggle: "pirdebug")
+// Verbose PIR diagnostics: a [PIR DEBUG] line every PIR_DEBUG_INTERVAL_MS plus the "pirdebug" serial command. Compiled out
+// unless built with -DPIR_DEBUG_ENABLED=1 (arduino-cli: --build-property "compiler.cpp.extra_flags=-DPIR_DEBUG_ENABLED=1").
+// Normal builds only log PIR state changes ("[pir] motion detected" / "[pir] motion cleared").
+#ifndef PIR_DEBUG_ENABLED
+#define PIR_DEBUG_ENABLED 0
+#endif
+constexpr bool     PIR_DEBUG_DEFAULT = true;     // when compiled in: starts on (toggle: "pirdebug")
 constexpr uint32_t PIR_DEBUG_INTERVAL_MS = 1000;
 constexpr uint32_t PIR_RADIO_WINDOW_MS = 2000;   // a PIR trigger this soon after a Wi-Fi radio start is counted separately
 // When motion starts, telemetry is sent at once (not at the next 30 s report) so a Security alert appears immediately.

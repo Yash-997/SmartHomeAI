@@ -287,15 +287,23 @@ Hardware: nothing in this chunk changed the firmware, and none of it was run on 
 
 Two features, both learned from **your own device's stored readings** (no cloud service, no pre-trained model, no invented data). Everything is advisory: ML never sends a command, never touches automation rules and has no influence on the firmware's own gas warning, which keeps working with the backend and ML switched off.
 
+### Historical data collection
+
+- **Telemetry history**: every accepted MQTT telemetry message is one row in `telemetry_readings` (temperature, humidity, motion, raw gas ADC, server receive time, device time, sequence number). Rows are only ever added; nothing overwrites them. QoS 1 redeliveries are dropped by a payload hash, retained (old) messages are not stored as new, a missing sensor value is stored as NULL (never 0), and the data survives restarts because it lives in PostgreSQL.
+- **Connectivity history** (`device_status_events`, migration V11): once a minute the backend compares each device's connection (the same ONLINE/OFFLINE rule the dashboard uses) with the last recorded state and adds a row when it changed: "reported online", "reported offline", or "went silent". A restart simply continues from the last stored row.
+- **What the dashboard shows**: total records stored, collection start date, records in the last 24 h, motion readings, and the training dataset exactly as training would build it right now (usable 15-minute slots, days, slots with and without motion), plus the connectivity history and disconnections in the last 7 days. Until there is enough history the page says **"Collecting historical data"**; nothing is predicted and no data is ever generated to fill the gap.
+
 ### Occupancy prediction
 
 - **What "occupied" means**: the PIR motion sensor fired at least once in a 15-minute slot. It is an activity proxy; a person sitting still may not trigger it.
 - **Data**: persisted `motion` readings, bucketed into 15-minute slots. A slot with fewer than 10 readings is dropped, never labelled "empty" (a silent device is not an empty room).
-- **Model**: logistic regression written in Java (Newton/IRLS with L2 ridge, backtracking line search, deterministic). Features: 6 sine/cosine harmonics of time of day, weekday dummies, and weekend x time-of-day interactions (30 features). The time zone is chosen at training (default: your browser's).
+- **Model**: logistic regression written in Java (Newton/IRLS with L2 ridge, backtracking line search, deterministic). Features (model version 2): 6 sine/cosine harmonics of time of day, weekday dummies, weekend x time-of-day interactions, and the **motion frequency of that hour of the week** in the history (smoothed log-odds, 31 features). The frequency feature leaves each training slot's own label out (leave-one-out), and the hold-out evaluation computes it from the training part only, so the reported metrics stay honest; on purely random motion the model is reported as LOW_QUALITY with an AUC near 0.5 (tested). Version-1 models stored before this change keep working. The time zone is `Asia/Kolkata` by default (`ML_TIME_ZONE`).
+- **Versions and history**: every training run (manual or automatic) is stored in `ml_training_runs` with its trigger, data range, slot counts, evaluation metrics, duration and feature set. A run that produces a model gives it the next version number (v1, v2, ...) and makes it current; a run without enough data is recorded but never replaces a working model.
 - **Evaluation**: chronological hold-out (fit on the earliest 80% of slots, score the latest 20%), then the stored model is refitted on all slots. Reported: accuracy, precision, recall, F1, AUC, log loss, Brier score, and the baseline "always guess the training average" for accuracy and log loss. Measures that are undefined (for example precision with no predicted positives) are `null`, not 0.
 - **Status**: `READY`; `LOW_QUALITY` (not better than the baseline, or AUC below 0.6; predictions still marked as such); `INSUFFICIENT_DATA` (no model, no metrics, plus the reason and what is missing); `NOT_TRAINED`. A failed retrain never overwrites a working model.
 - **Confidence**: the probability of the predicted class, plus the number of similar past hour-of-week slots (`support`) and `reliable=false` when that is small.
-- **When it trains**: only on `POST .../occupancy/train` (rate limited, one run at a time) or the hourly check, which retrains when at least 24 h and 1500 new samples have passed. Never per telemetry message.
+- **When it trains**: automatically from an hourly check, or on `POST .../occupancy/train` (rate limited, one run at a time). The hourly check trains a device's first model as soon as it has recent real data; after "not enough data" it tries again only every 6 h; an existing model is retrained only when at least 24 h **and** 1500 new motion readings have passed, so unchanged data is never retrained. Devices without data in the last 2 days are skipped. Never per telemetry message.
+- **Learned pattern**: `GET .../occupancy/pattern` returns all 168 hours of the week with the training evidence (slots, share with motion) and the model's probability; the dashboard shows it as a heatmap with the busiest and quietest hours for weekdays and weekends.
 
 ### Anomaly detection
 
@@ -304,8 +312,21 @@ Two features, both learned from **your own device's stored readings** (no cloud 
 - **Stuck**: 60 identical temperature/humidity readings (INFO) or 20 identical gas readings (WARNING).
 - **Missing**: 10 messages in a row without temperature/humidity, or 20 without gas (WARNING). A missing value is never treated as 0.
 - **Stale**: no message for 10 minutes (given up after 7 days).
+- **Sudden change**: the jump between two consecutive readings (at most 5 minutes apart), scored with a robust z-score against the device's own history of reading-to-reading changes (needs 200 such pairs). WARNING at |z| >= 6, CRITICAL at >= 10. Catches a sensor that suddenly misbehaves even when the new value alone looks normal.
+- **Unusual activity**: motion in an hour of the week that the learned pattern says is normally quiet: at most 10 % of at least 8 past slots had motion **and** the READY model gives at most 15 %. Without a READY model nothing is judged.
 - **History**: one row per ongoing problem (with an occurrence count). States `OPEN`, `ACKNOWLEDGED`, `RESOLVED`, `DISMISSED` (suppressed for 60 minutes), `AUTO_RESOLVED` (condition ended). Gas findings carry an advisory note and are never a replacement for the physical alarm.
 - **Runs**: about once a minute for online devices, and on demand with "Check now".
+
+### Synthetic demonstration dataset
+
+Real telemetry from a hobby board is often too short or patchy to train on, so the pipeline can also be exercised on a **generated** dataset. It is clearly separate and clearly labelled:
+
+- **Separate storage** (migration `V12__synthetic_datasets.sql`): `synthetic_datasets`, `synthetic_readings` (one row per online minute, with ground-truth `occupancy` OCCUPIED/UNOCCUPIED and a `scenario` label) and `synthetic_connectivity_events`. Nothing is ever written to `telemetry_readings`, so the dashboard, security, live anomaly scans, automation and the assistant never see it. `ml_training_runs.data_source` says REAL or SYNTHETIC.
+- **Separate model**: trained into `ml_models` with type `OCCUPANCY_SYNTH`. The device's real `OCCUPANCY` model, its predictions and its "Collecting historical data" state are unaffected.
+- **Generator** (`SyntheticGenerator`, deterministic per seed): 30 days, one reading per minute, a simulated household with weekday/weekend routines, work-from-home days and outings; PIR motion only when someone is home; DHT22 temperature with an outdoor cycle, thermal lag, body heat and cooking; humidity with showers and cooking; MQ-2 raw ADC (never ppm) with humidity sensitivity, cooking rises below the 600 warning level and a warm-up gap after reconnecting; rare DHT22 read failures and random Wi-Fi outages. Five labelled anomaly scenarios sit in the last days: frozen DHT22, MQ-2 saturated at 4095, missing values, a 50-minute disconnection and motion at 03:15 on a weekday night.
+- **Training** (`SyntheticTrainer`, the same features and logistic regression as the real model): chronological 70/15/15 train/validation/test split with a 1-hour embargo after each boundary, regularisation chosen on validation only, final model refitted on train+validation and scored once on test against the majority-class baseline. Labelled anomaly slots are kept out of occupancy training and scoring.
+- **Anomaly check** (`SyntheticAnomalyEvaluator`): replays the last days minute by minute through the existing detectors with production thresholds and reports, per scenario, whether and how fast it was detected, plus every false alarm during normal minutes.
+- **Running it** (only on request, never at startup): ML Insights, "Synthetic demonstration model" panel, **Generate 30-day synthetic dataset**, then **Train on synthetic data**. API: `GET /api/devices/{id}/ml/synthetic`, `POST .../synthetic/generate?seed=&days=` (idempotent: the same settings return the existing dataset), `POST .../synthetic/train`, `GET .../synthetic/forecast?hours=`. Every response carries `source: "SYNTHETIC"` and a notice that it does not describe your home.
 
 ### Endpoints (user JWT; 404 if the device is not yours)
 
@@ -315,11 +336,14 @@ Two features, both learned from **your own device's stored readings** (no cloud 
 | POST | `/api/devices/{id}/ml/occupancy/train?timeZone=` | train now; 429 if repeated within 30 s, 409 if already running |
 | GET | `/api/devices/{id}/ml/occupancy/predict?at=` | one prediction (default now); 409 when no usable model |
 | GET | `/api/devices/{id}/ml/occupancy/forecast?hours=&stepMinutes=&from=` | forecast points |
+| GET | `/api/devices/{id}/ml/occupancy/runs?limit=` | training history with versions and metrics |
+| GET | `/api/devices/{id}/ml/occupancy/pattern` | learned weekly pattern (168 hours); 409 until a model exists |
+| GET | `/api/devices/{id}/ml/connectivity?limit=` | connectivity history and disconnections in the last 7 days |
 | GET | `/api/devices/{id}/ml/anomalies?status=active\|all&limit=` | anomaly history |
 | PATCH | `/api/devices/{id}/ml/anomalies/{anomalyId}` | `{status: ACKNOWLEDGED\|RESOLVED\|DISMISSED, note}`; 409 if already closed |
 | POST | `/api/devices/{id}/ml/anomalies/scan` | check now (rate limited) |
 
-Migration `V6__ml.sql` adds `ml_models` and `ml_anomalies` (cascade-deleted with the device). Settings live under `app.ml.*` in `application.properties`.
+Migration `V6__ml.sql` adds `ml_models` and `ml_anomalies`; `V11__ml_history.sql` adds `device_status_events`, `ml_training_runs` and the `ml_models.version` column (existing models become version 1). All are cascade-deleted with the device and removed when it is disowned. Settings live under `app.ml.*` in `application.properties`.
 
 ### Manual verification
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, ApiError, type Forecast, type OccupancyStatus, type Prediction } from '../api'
-import { STATE, browserZone, num, pct, progress, verdict, zoneList } from '../insights'
+import { api, ApiError, type Forecast, type OccupancyPattern, type OccupancyStatus, type Prediction, type TrainingRun } from '../api'
+import { DISPLAY_TZ, STATE, fmtCount, fmtDate, fmtDateTime, num, pct, progress, verdict, zoneList } from '../insights'
+import PatternHeatmap from './PatternHeatmap'
 
 function Badge({ tone, children }: { tone: string; children: React.ReactNode }) {
   return <span className={`rounded px-2 py-0.5 text-xs font-medium ${tone}`}>{children}</span>
@@ -47,25 +48,42 @@ interface Props {
 
 export default function OccupancyPanel({ deviceId, status, onChanged }: Props) {
   const zones = useMemo(() => zoneList(), [])
-  const [zone, setZone] = useState(status.timeZone ?? browserZone())
+  const [zone, setZone] = useState(status.timeZone ?? DISPLAY_TZ)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const available = status.predictionsAvailable
   // Predictions belong to one trained model; a result only counts while it matches the model currently shown.
   const modelKey = available ? `${deviceId}:${status.trainedAt}` : ''
-  const [predictions, setPredictions] = useState<{ key: string; now?: Prediction; forecast?: Forecast; error?: string } | null>(null)
+  const [predictions, setPredictions] = useState<{ key: string; now?: Prediction; forecast?: Forecast; pattern?: OccupancyPattern; error?: string } | null>(null)
   const shown = predictions && modelKey !== '' && predictions.key === modelKey ? predictions : null
+  // Training history changes with every run, so it is keyed on the run count.
+  const runsKey = `${deviceId}:${status.trainingRuns}:${status.trainedAt}`
+  const [history, setHistory] = useState<{ key: string; runs?: TrainingRun[]; error?: string } | null>(null)
+  const runs = history && history.key === runsKey ? history : null
 
   useEffect(() => {
     if (modelKey === '') return
     let cancelled = false
-    Promise.all([api.predictNow(deviceId), api.forecast(deviceId, 24)])
-      .then(([n, f]) => !cancelled && setPredictions({ key: modelKey, now: n, forecast: f }))
+    // The pattern is optional: if it fails, predictions are still shown.
+    Promise.all([api.predictNow(deviceId), api.forecast(deviceId, 24), api.occupancyPattern(deviceId).catch(() => undefined)])
+      .then(([n, f, p]) => !cancelled && setPredictions({ key: modelKey, now: n, forecast: f, pattern: p }))
       .catch((e) => !cancelled && setPredictions({ key: modelKey, error: e instanceof ApiError ? e.message : 'Could not load predictions' }))
     return () => {
       cancelled = true
     }
   }, [modelKey, deviceId])
+
+  useEffect(() => {
+    if (status.trainingRuns === 0) return
+    let cancelled = false
+    api
+      .trainingRuns(deviceId, 8)
+      .then((r) => !cancelled && setHistory({ key: runsKey, runs: r }))
+      .catch((e) => !cancelled && setHistory({ key: runsKey, error: e instanceof ApiError ? e.message : 'Could not load training history' }))
+    return () => {
+      cancelled = true
+    }
+  }, [runsKey, deviceId, status.trainingRuns])
 
   const train = async () => {
     setBusy(true)
@@ -87,8 +105,11 @@ export default function OccupancyPanel({ deviceId, status, onChanged }: Props) {
   return (
     <section className="rounded-xl bg-slate-800 p-5 shadow-lg" aria-labelledby="occupancy-heading">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 id="occupancy-heading" className="font-semibold">Occupancy prediction</h3>
-        <Badge tone={state.tone}>{state.label}</Badge>
+        <h3 id="occupancy-heading" className="font-semibold">Occupancy prediction <span className="ml-1 rounded bg-emerald-500/15 px-1.5 py-0.5 align-middle text-[11px] font-medium text-emerald-300">Real data</span></h3>
+        <div className="flex items-center gap-2">
+          {status.modelVersion > 0 && <Badge tone="bg-indigo-500/20 text-indigo-200">Model v{status.modelVersion}</Badge>}
+          <Badge tone={state.tone}>{state.label}</Badge>
+        </div>
       </div>
       <p className="mt-1 text-sm text-slate-300">{status.message}</p>
       <p className="mt-1 text-xs text-slate-500">
@@ -98,29 +119,34 @@ export default function OccupancyPanel({ deviceId, status, onChanged }: Props) {
       {/* ---- readiness ---- */}
       <div className="mt-4 rounded-lg bg-slate-900 p-3">
         <h4 className="text-sm font-medium">Readiness</h4>
+        <p className="mt-1 text-xs text-slate-400">
+          {status.data.motionReadings === 0
+            ? 'No motion readings are stored for this device yet.'
+            : `${fmtCount(status.data.motionReadings)} real motion readings stored (${fmtDate(status.data.firstAt)} to ${fmtDate(status.data.lastAt)}).`}
+        </p>
         {steps ? (
           <ul className="mt-2 space-y-2">
             {steps.map((s) => (
               <li key={s.label} className="text-xs">
-                <div className="mb-1 flex justify-between text-slate-400"><span>{s.label}</span><span>{s.have} / {s.need} needed</span></div>
+                <div className="mb-1 flex justify-between text-slate-400"><span>{s.label}</span><span className="tabular-nums">{fmtCount(s.have)} / {fmtCount(s.need)} needed</span></div>
                 <Bar have={s.have} need={s.need} />
               </li>
             ))}
           </ul>
         ) : (
-          <p className="mt-1 text-xs text-slate-400">
-            {status.data.motionReadings === 0
-              ? 'No motion readings are stored for this device yet.'
-              : `${status.data.motionReadings} motion readings stored (${status.data.firstAt ? new Date(status.data.firstAt).toLocaleDateString() : '?'} to ${status.data.lastAt ? new Date(status.data.lastAt).toLocaleDateString() : '?'}).`}{' '}
-            Training will check whether that is enough: at least {status.requirements.minUsableSlots} usable {status.requirements.slotMinutes}-minute slots over {status.requirements.minDistinctDays}+ days.
-          </p>
-        )}
-        {status.trainedAt && (
           <p className="mt-2 text-xs text-slate-500">
-            Last training run {new Date(status.trainedAt).toLocaleString()}{status.timeZone ? ` · time zone ${status.timeZone}` : ''}
-            {status.counts?.dataFrom && status.counts.dataTo ? ` · data ${new Date(status.counts.dataFrom).toLocaleDateString()} to ${new Date(status.counts.dataTo).toLocaleDateString()}` : ''}
+            Training needs at least {status.requirements.minUsableSlots} usable {status.requirements.slotMinutes}-minute slots over {status.requirements.minDistinctDays}+ days.
           </p>
         )}
+        <dl className="mt-3 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+          <div><dt className="inline text-slate-500">Last successful training: </dt><dd className="inline">{fmtDateTime(status.lastSuccessfulTrainingAt)}</dd></div>
+          <div><dt className="inline text-slate-500">Last training attempt: </dt><dd className="inline">{fmtDateTime(status.trainedAt)}</dd></div>
+          <div><dt className="inline text-slate-500">Model version: </dt><dd className="inline">{status.modelVersion > 0 ? `v${status.modelVersion}` : 'none yet'}</dd></div>
+          <div><dt className="inline text-slate-500">Training runs so far: </dt><dd className="inline">{status.trainingRuns}</dd></div>
+          {status.counts?.dataFrom && status.counts.dataTo && (
+            <div className="sm:col-span-2"><dt className="inline text-slate-500">Data used: </dt><dd className="inline">{fmtDate(status.counts.dataFrom)} to {fmtDate(status.counts.dataTo)} · {fmtCount(status.counts.usableSlots)} slots over {status.counts.distinctDays} days{status.timeZone ? ` · ${status.timeZone}` : ''}</dd></div>
+          )}
+        </dl>
         <div className="mt-3 flex flex-wrap items-end gap-3">
           <label className="text-xs text-slate-400">
             Time zone for "time of day"
@@ -134,7 +160,10 @@ export default function OccupancyPanel({ deviceId, status, onChanged }: Props) {
           </button>
         </div>
         <p className="mt-2 text-[11px] text-slate-500">
-          Training uses the stored history. It runs only when you press this, or about once a day automatically when enough new data has arrived. It never runs on individual readings.
+          {status.autoTraining
+            ? 'Training is automatic: the backend checks every hour, trains the first model as soon as there is enough real history, and retrains about once a day when enough new readings have arrived. You can also train now.'
+            : 'Automatic training is switched off on the server; press the button to train.'}{' '}
+          It never runs on individual readings, and nothing is predicted until a model exists.
         </p>
         {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
       </div>
@@ -187,6 +216,42 @@ export default function OccupancyPanel({ deviceId, status, onChanged }: Props) {
               <p className="mb-1 text-xs text-slate-400">Chance of motion, next 24 hours (hour of day, {shown.forecast.timeZone})</p>
               <ForecastChart forecast={shown.forecast} />
               <p className="mt-1 text-[11px] text-slate-500">Hatched bars rest on few similar past slots and are less trustworthy.</p>
+            </div>
+          )}
+          {shown?.pattern && (
+            <div className="mt-4">
+              <h4 className="text-sm font-medium">Learned weekly pattern</h4>
+              <p className="mb-2 text-xs text-slate-400">What model v{shown.pattern.modelVersion} learned about when this place is usually busy or quiet.</p>
+              <PatternHeatmap pattern={shown.pattern} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ---- training history ---- */}
+      {status.trainingRuns > 0 && (
+        <div className="mt-4">
+          <h4 className="text-sm font-medium">Training history</h4>
+          {!runs && <p className="mt-1 text-xs text-slate-400">Loading...</p>}
+          {runs?.error && <p className="mt-1 text-xs text-red-400">{runs.error}</p>}
+          {runs?.runs && (
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="text-slate-500">
+                  <tr><th className="py-1 pr-3 font-medium">When ({DISPLAY_TZ})</th><th className="pr-3 font-medium">How</th><th className="pr-3 font-medium">Result</th><th className="pr-3 font-medium">Data</th><th className="font-medium">AUC</th></tr>
+                </thead>
+                <tbody className="text-slate-200">
+                  {runs.runs.map((r) => (
+                    <tr key={r.id} className="border-t border-slate-700 align-top">
+                      <td className="py-1 pr-3 tabular-nums">{fmtDateTime(r.trainedAt)}</td>
+                      <td className="pr-3">{r.trigger === 'AUTO' ? 'automatic' : 'manual'}</td>
+                      <td className="pr-3">{r.version !== null ? `v${r.version} ${r.status === 'READY' ? 'ready' : 'low quality'}` : 'not enough data'}{r.becameCurrent ? '' : r.version !== null ? '' : ' (model kept)'}</td>
+                      <td className="pr-3 tabular-nums">{fmtCount(r.usableSlots)} slots · {r.distinctDays} d</td>
+                      <td className="tabular-nums">{r.metrics ? num(r.metrics.auc, 2) : '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>

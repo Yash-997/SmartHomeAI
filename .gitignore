@@ -29,3 +29,9 @@ backups/
 **/.env
 **/.env.*
 !**/.env.example
+
+#TEX
+*.tex
+
+# Graphify 
+graphify-out/

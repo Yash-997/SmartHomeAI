@@ -176,6 +176,22 @@ class SecurityModeTests extends IntelTestBase {
 	}
 
 	@Test
+	void theReadingBeingJudgedNeverCountsAsItsOwnEarlierMotion() throws Exception {
+		// The database keeps microseconds; the clock has nanoseconds. The stored copy of a reading can therefore sit a
+		// fraction of a microsecond before the event's time. It must not be mistaken for earlier motion, or motion after a
+		// long silence would be merged into an old episode.
+		String t = newUserToken();
+		Paired p = onlineNamed(t, "Precision");
+		setMode(t, "AWAY");
+		motion(p);
+		ageHistory(p, 600);                                       // first episode, 10 minutes ago
+		Instant stored = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+		telemetryRepo.save(new com.smarthome.telemetry.TelemetryReading(p.uuid(), stored, null, 9_999_001L, null, null, true, null, "precision-" + stored));
+		security.onTelemetry(motionEventAt(p, stored.plusNanos(400)));   // the same reading, as the event reports it
+		assertEquals(2, countKind(t, "MOTION_ALERT"), "a new episode after the silence");
+	}
+
+	@Test
 	void openAlertsStayListedUntilAcknowledgedHoweverMuchHistoryFollows() throws Exception {
 		String t = newUserToken();
 		Paired p = onlineNamed(t, "Back door");

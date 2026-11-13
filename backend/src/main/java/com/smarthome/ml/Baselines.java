@@ -21,6 +21,8 @@ public final class Baselines {
 	}
 
 	private final Stat[] overall = new Stat[Metric.values().length];
+	/** How much a sensor normally changes between two consecutive readings (null: not enough history). */
+	private final Stat[] delta = new Stat[Metric.values().length];
 	private final Stat[][] hourly = new Stat[Metric.values().length][24];
 	private final int totalSamples;
 
@@ -42,8 +44,16 @@ public final class Baselines {
 		return h != null ? h : o;
 	}
 
+	/** Typical change between consecutive readings, or null when there are too few consecutive pairs to say. */
+	public Stat delta(Metric metric) {
+		return delta[metric.ordinal()];
+	}
+
 	public static Baselines build(List<SensorSample> samples, MlProperties.Anomaly cfg) {
 		Baselines b = new Baselines(samples.size());
+		for (Metric metric : Metric.values()) {
+			b.delta[metric.ordinal()] = deltas(samples, metric, cfg);
+		}
 		for (Metric metric : Metric.values()) {
 			List<Double> all = new ArrayList<>();
 			@SuppressWarnings("unchecked")
@@ -75,6 +85,28 @@ public final class Baselines {
 			}
 		}
 		return b;
+	}
+
+	/**
+	 * Changes between consecutive readings of one sensor (samples may come in either order). Pairs further apart than
+	 * the configured gap are skipped: after an outage the first change is not "sudden".
+	 */
+	private static Stat deltas(List<SensorSample> samples, Metric metric, MlProperties.Anomaly cfg) {
+		List<SensorSample> sorted = new ArrayList<>(samples);
+		sorted.sort((x, y) -> x.at().compareTo(y.at()));
+		List<Double> changes = new ArrayList<>();
+		SensorSample prev = null;
+		for (SensorSample s : sorted) {
+			Double v = metric.of(s);
+			if (v == null || v.isNaN() || v.isInfinite()) {
+				continue;
+			}
+			if (prev != null && java.time.Duration.between(prev.at(), s.at()).getSeconds() <= cfg.suddenMaxGapSeconds()) {
+				changes.add(v - metric.of(prev));
+			}
+			prev = s;
+		}
+		return changes.size() < cfg.minDeltaSamples() ? null : stat(changes, metric.minScale(cfg), false);
 	}
 
 	private static Stat stat(List<Double> values, double floor, boolean hourSpecific) {

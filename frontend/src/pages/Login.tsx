@@ -39,9 +39,9 @@ export default function Login() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-900 p-6 text-slate-100">
-      <form onSubmit={submit} noValidate className="w-full max-w-sm space-y-4 rounded-xl bg-slate-800 p-6 shadow-lg">
-        <h1 className="text-2xl font-bold">Sign in</h1>
+    <main className="flex min-h-screen items-center justify-center p-6 text-slate-100">
+      <form onSubmit={submit} noValidate className="card w-full max-w-sm space-y-4 p-7">
+        <h1 className="text-2xl font-semibold tracking-tight">Sign in</h1>
         {sessionExpired && (
           <p className="rounded bg-yellow-500/10 p-2 text-sm text-yellow-300">
             Your session has expired. Please sign in again.
@@ -52,7 +52,7 @@ export default function Login() {
           onChange={(e) => setUsername(e.target.value)} error={errors.username} />
         <Field id="password" label="Password" type="password" autoComplete="current-password" value={password}
           onChange={(e) => setPassword(e.target.value)} error={errors.password} />
-        <button disabled={busy} className="w-full rounded-md bg-indigo-600 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-60">
+        <button disabled={busy} className="btn-primary w-full rounded-lg py-2.5 text-sm">
           {busy ? 'Signing in...' : 'Sign in'}
         </button>
         <p className="text-center text-sm text-slate-400">

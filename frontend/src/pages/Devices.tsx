@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, ApiError, type Device } from '../api'
 import AddDevice from '../components/AddDevice'
-import Header from '../components/Header'
 import OutputControls from '../components/OutputControls'
+import Shell, { PageHeader } from '../components/Shell'
 import TelemetryPanel, { ConnectionBadge } from '../components/TelemetryPanel'
 import { liveStatus } from '../telemetry'
+import { DevicesIcon, PencilIcon, PlusIcon } from '../ui/icons'
 
 // fetchedAt (browser ms) lets cards keep their "x seconds ago" ticking between polls.
 type Load = { kind: 'loading' } | { kind: 'ready'; devices: Device[]; fetchedAt: number } | { kind: 'error'; message: string }
@@ -35,9 +36,10 @@ function DeviceCard({ device, elapsedSeconds, onChanged }: { device: Device; ela
   }
 
   return (
-    <li className="rounded-xl bg-slate-800 p-4 shadow-lg">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
+    <li className="card p-5">
+      <div className="flex items-start gap-3">
+        <span aria-hidden="true" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-slate-700 text-indigo-400"><DevicesIcon /></span>
+        <div className="min-w-0 flex-1">
           {editing ? (
             <form
               className="flex gap-2"
@@ -49,15 +51,16 @@ function DeviceCard({ device, elapsedSeconds, onChanged }: { device: Device; ela
             >
               <input aria-label="Device name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)}
                 className="rounded-md border border-slate-600 bg-slate-900 px-2 py-1 text-sm" autoFocus />
-              <button disabled={busy} className="rounded-md bg-indigo-600 px-3 py-1 text-sm hover:bg-indigo-500">Save</button>
+              <button disabled={busy} className="btn-primary rounded-lg px-3 py-1 text-sm">Save</button>
               <button type="button" onClick={() => { setEditing(false); setName(device.name); setError('') }}
-                className="rounded-md bg-slate-700 px-3 py-1 text-sm hover:bg-slate-600">Cancel</button>
+                className="btn-secondary rounded-lg px-3 py-1 text-sm">Cancel</button>
             </form>
           ) : (
-            <h3 className="truncate font-semibold">{device.name}</h3>
+            <h3 className="truncate text-lg font-semibold leading-tight">{device.name}</h3>
           )}
-          <p className="mt-1 font-mono text-xs text-slate-500">{device.deviceId}</p>
-          <p className="mt-1 text-xs text-slate-500">Paired {new Date(device.registeredAt).toLocaleString()}</p>
+          <p className="mt-0.5 truncate text-xs text-slate-500">
+            <span className="font-mono" title="Device ID">{device.deviceId}</span> · paired {new Date(device.registeredAt).toLocaleDateString()}
+          </p>
         </div>
 
         <ConnectionBadge connection={liveStatus(device, elapsedSeconds).connection} />
@@ -69,22 +72,22 @@ function DeviceCard({ device, elapsedSeconds, onChanged }: { device: Device; ela
       {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
 
       {!confirming ? (
-        <div className="mt-3 flex gap-2">
+        <div className="mt-5 flex gap-2 border-t border-slate-700/60 pt-4">
           <button onClick={() => setEditing(true)} disabled={editing}
-            className="rounded-md bg-slate-700 px-3 py-1 text-sm hover:bg-slate-600 disabled:opacity-50">Rename</button>
+            className="btn-secondary inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm"><PencilIcon width={15} height={15} />Rename</button>
           <button onClick={() => setConfirming(true)}
-            className="rounded-md bg-red-900/60 px-3 py-1 text-sm text-red-200 hover:bg-red-900">Disown</button>
+            className="btn-danger ml-auto rounded-lg px-3 py-1.5 text-sm">Disown</button>
         </div>
       ) : (
-        <div className="mt-3 rounded-md bg-red-950/50 p-3 text-sm">
+        <div role="alertdialog" aria-label={`Disown ${device.name}`} className="mt-3 rounded-lg border border-red-400/30 bg-red-950/50 p-3 text-sm">
           <p>
             Disown <strong>{device.name}</strong>? Its credentials will be revoked and it will stop working until it is
             paired again with a new code.
           </p>
           <div className="mt-3 flex gap-2">
             <button disabled={busy} onClick={() => run(() => api.disownDevice(device.id), () => setConfirming(false))}
-              className="rounded-md bg-red-600 px-3 py-1 hover:bg-red-500 disabled:opacity-60">Yes, disown</button>
-            <button onClick={() => setConfirming(false)} className="rounded-md bg-slate-700 px-3 py-1 hover:bg-slate-600">Keep</button>
+              className="rounded-lg bg-red-500 px-3 py-1.5 font-medium text-slate-950 hover:bg-red-400 disabled:opacity-60">Yes, disown</button>
+            <button onClick={() => setConfirming(false)} className="btn-secondary rounded-lg px-3 py-1.5">Keep</button>
           </div>
         </div>
       )}
@@ -131,34 +134,31 @@ export default function Devices() {
   const devices = load.kind === 'ready' ? load.devices : []
 
   return (
-    <main className="min-h-screen bg-slate-900 p-6 text-slate-100">
-      <div className="mx-auto max-w-2xl space-y-6">
-        <Header />
+    <Shell>
+      <PageHeader
+        title="Devices"
+        subtitle="Pair, rename and control your devices."
+        actions={<button onClick={() => setAdding(true)} className="btn-primary inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm"><PlusIcon width={16} height={16} />Add device</button>}
+      />
 
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Your devices</h2>
-          <button onClick={() => setAdding(true)} className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500">
-            Add device
-          </button>
+      {load.kind === 'loading' && <p role="status" className="text-slate-400">Loading...</p>}
+      {load.kind === 'error' && <p role="alert" className="rounded-xl border border-red-400/40 bg-red-500/10 p-4 text-sm text-red-300">{load.message} <button type="button" onClick={refresh} className="underline">Try again</button></p>}
+      {load.kind === 'ready' && devices.length === 0 && (
+        <div className="card p-8 text-center">
+          <h2 className="text-lg font-semibold">No devices yet</h2>
+          <p className="mx-auto mt-1 max-w-sm text-sm text-slate-400">Pair your ESP32 to see its readings and control its outputs.</p>
+          <button type="button" onClick={() => setAdding(true)} className="btn-primary mt-5 rounded-lg px-5 py-2.5 text-sm">Add device</button>
         </div>
-
-        {load.kind === 'loading' && <p className="text-slate-400">Loading...</p>}
-        {load.kind === 'error' && <p className="rounded bg-red-500/10 p-3 text-sm text-red-400">{load.message}</p>}
-        {load.kind === 'ready' && devices.length === 0 && (
-          <p className="rounded-xl bg-slate-800 p-6 text-center text-sm text-slate-400">
-            No devices yet. Click "Add device" to pair your ESP32.
-          </p>
-        )}
-        <ul className="space-y-3">
-          {devices.map((d) => (
-            <DeviceCard key={d.id} device={d} elapsedSeconds={elapsedSeconds} onChanged={refresh} />
-          ))}
-        </ul>
-      </div>
+      )}
+      <ul className={`grid gap-4 ${devices.length > 1 ? 'xl:grid-cols-2' : ''}`}>
+        {devices.map((d) => (
+          <DeviceCard key={d.id} device={d} elapsedSeconds={elapsedSeconds} onChanged={refresh} />
+        ))}
+      </ul>
 
       {adding && (
         <AddDevice knownIds={devices.map((d) => d.id)} onClose={() => setAdding(false)} onPaired={refresh} />
       )}
-    </main>
+    </Shell>
   )
 }

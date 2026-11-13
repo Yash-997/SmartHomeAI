@@ -121,14 +121,15 @@ export default function ChatMessageView({ message, onSuggestionChange }: Props) 
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
-        <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-indigo-600 px-4 py-2 text-sm">{message.content}</p>
+        <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-indigo-400 px-4 py-2.5 text-[15px] font-medium text-slate-950 shadow-sm">{message.content}</p>
       </div>
     )
   }
   const note = message.status ? STATUS_NOTE[message.status] : null
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[92%] rounded-2xl rounded-bl-sm bg-slate-800 px-4 py-3 text-sm">
+    <div className="flex items-start justify-start gap-2.5">
+      <span aria-hidden="true" className="mt-1 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-slate-700 text-[11px] font-bold text-indigo-300">AI</span>
+      <div className="max-w-[88%] rounded-2xl rounded-tl-md bg-slate-700/70 px-4 py-3 text-[15px] leading-relaxed">
         {note && <p className={`mb-2 inline-block rounded px-2 py-0.5 text-xs font-medium ${note.tone}`}>{note.label}</p>}
         <p className="whitespace-pre-wrap text-slate-100">{message.content}</p>
         {message.warnings.length > 0 && (

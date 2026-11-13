@@ -12,6 +12,10 @@ import java.time.ZonedDateTime;
  *       smoothed a two-hour morning peak away, which the simulated-routine tests caught).</li>
  *   <li>Day of week as six 0/1 indicators (Monday is the reference).</li>
  *   <li>Weekend-specific copies of the time-of-day terms, so Saturday and Sunday can follow a different daily rhythm.</li>
+ *   <li>Model version 2 adds one more: the motion frequency of that hour of the week in the training history, as a
+ *       smoothed log-odds ({@link #frequency}). It lets the model follow a household's habits more closely than the
+ *       smooth curves alone. When training, each slot's own label is left out of its frequency (leave-one-out), so the
+ *       feature never "sees the answer".</li>
  * </ul>
  */
 public final class OccupancyFeatures {
@@ -20,6 +24,12 @@ public final class OccupancyFeatures {
 	public static final int HARMONICS = 6;
 	private static final int HARMONIC_TERMS = 2 * HARMONICS;
 	public static final int DIM = HARMONIC_TERMS + 6 + HARMONIC_TERMS;
+	/** Dimension with the motion-frequency feature (model version 2). */
+	public static final int DIM_V2 = DIM + 1;
+	/** Weight of the overall rate when smoothing an hour's motion frequency: like adding this many "average" slots. */
+	public static final double FREQUENCY_PRIOR = 4.0;
+	/** Description of the feature set, stored with each training run. */
+	public static final String FEATURE_SET = "v2: time-of-day, weekday, weekend, hour-of-week motion frequency";
 
 	private OccupancyFeatures() {
 	}
@@ -41,6 +51,24 @@ public final class OccupancyFeatures {
 		if (dow >= 6) {
 			System.arraycopy(harmonics, 0, x, HARMONIC_TERMS + 6, HARMONIC_TERMS);
 		}
+		return x;
+	}
+
+	/**
+	 * Smoothed motion frequency of one hour of the week, as log-odds: (motion slots + prior x base rate) / (slots + prior),
+	 * clamped to 2 %..98 % so an hour seen only a few times cannot dominate.
+	 */
+	public static double frequency(int slots, int motionSlots, double baseRate) {
+		double rate = (Math.max(0, motionSlots) + FREQUENCY_PRIOR * baseRate) / (Math.max(0, slots) + FREQUENCY_PRIOR);
+		double c = Math.min(0.98, Math.max(0.02, rate));
+		return Math.log(c / (1 - c));
+	}
+
+	/** The time features plus the frequency feature (version 2 layout). */
+	public static double[] withFrequency(double[] timeFeatures, double frequency) {
+		double[] x = new double[timeFeatures.length + 1];
+		System.arraycopy(timeFeatures, 0, x, 0, timeFeatures.length);
+		x[timeFeatures.length] = frequency;
 		return x;
 	}
 

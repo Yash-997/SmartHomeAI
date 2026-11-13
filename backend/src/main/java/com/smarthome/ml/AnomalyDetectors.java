@@ -58,6 +58,85 @@ public final class AnomalyDetectors {
 				metric == Metric.GAS ? explanation + " " + GAS_NOTE : explanation, d, sample.at()));
 	}
 
+	/**
+	 * A jump between two consecutive readings that is far outside how much this sensor normally changes from one
+	 * reading to the next (robust z-score of the change against the history of changes). Catches a sensor that suddenly
+	 * misbehaves, or a real sudden event, even when the new value on its own is not unusual.
+	 */
+	public static Optional<Finding> suddenChange(Metric metric, SensorSample previous, SensorSample current, Baselines.Stat changes,
+			MlProperties.Anomaly cfg) {
+		if (previous == null || current == null || changes == null) {
+			return Optional.empty();
+		}
+		Double before = metric.of(previous);
+		Double after = metric.of(current);
+		if (before == null || after == null) {
+			return Optional.empty();
+		}
+		long seconds = Duration.between(previous.at(), current.at()).getSeconds();
+		if (seconds <= 0 || seconds > cfg.suddenMaxGapSeconds()) {
+			return Optional.empty();   // not consecutive in time: after a gap a big change is expected
+		}
+		double change = after - before;
+		double z = RobustStats.score(change, changes.median(), changes.scale());
+		double abs = Math.abs(z);
+		if (abs < cfg.suddenWarnZ()) {
+			return Optional.empty();
+		}
+		AnomalySeverity severity = abs >= cfg.suddenCriticalZ() ? AnomalySeverity.CRITICAL : AnomalySeverity.WARNING;
+		String unit = unit(metric);
+		String explanation = String.format(Locale.ROOT,
+				"%s changed suddenly from %s%s to %s%s (%s%s%s) between two readings %d s apart. From one reading to the next it normally "
+						+ "changes by about %s%s (from %d consecutive pairs); this change scores %.1f. Check the sensor, or what happened in the room.",
+				metric.scope(), num(before), unit, num(after), unit, change > 0 ? "+" : "", num(change), unit, seconds, num(changes.scale()), unit,
+				changes.n(), abs);
+		Map<String, Object> d = new LinkedHashMap<>();
+		d.put("method", "robust z-score of the change between consecutive readings");
+		d.put("previous", before);
+		d.put("value", after);
+		d.put("change", change);
+		d.put("seconds", seconds);
+		d.put("typicalChange", changes.median());
+		d.put("spread", changes.scale());
+		d.put("score", Math.round(z * 100) / 100.0);
+		d.put("pairs", changes.n());
+		d.put("warnAt", cfg.suddenWarnZ());
+		d.put("criticalAt", cfg.suddenCriticalZ());
+		if (metric == Metric.GAS) {
+			d.put("note", GAS_NOTE);
+		}
+		return Optional.of(new Finding(AnomalyKind.SUDDEN_CHANGE, metric.scope(), severity,
+				metric == Metric.GAS ? explanation + " " + GAS_NOTE : explanation, d, current.at()));
+	}
+
+	/**
+	 * Motion at a time the learned household pattern says is normally quiet: in the training history this hour of the
+	 * week had motion in at most {@code quietHourMaxRate} of at least {@code quietHourMinSupport} slots, and the trained
+	 * model also gives a low probability. Both are required, so neither thin evidence nor the model alone can raise it.
+	 */
+	public static Optional<Finding> unusualActivity(java.time.ZonedDateTime local, Instant at, double modelProbability, Double observedRate,
+			int support, MlProperties.Anomaly cfg) {
+		if (observedRate == null || support < cfg.quietHourMinSupport() || observedRate > cfg.quietHourMaxRate()
+				|| modelProbability > cfg.quietHourMaxProbability()) {
+			return Optional.empty();
+		}
+		int motionSlots = (int) Math.round(observedRate * support);
+		String when = local.getDayOfWeek().getDisplayName(java.time.format.TextStyle.SHORT, Locale.ENGLISH) + " "
+				+ String.format(Locale.ROOT, "%02d:%02d", local.getHour(), local.getMinute());
+		String explanation = String.format(Locale.ROOT,
+				"Motion at %s (%s), a time that is normally quiet: in the learned history this device saw motion in %d of %d slots at this "
+						+ "hour on this weekday (%.0f%%), and the occupancy model expected a %.0f%% chance. If nobody should be there, check it.",
+				when, local.getZone().getId(), motionSlots, support, observedRate * 100, modelProbability * 100);
+		Map<String, Object> d = new LinkedHashMap<>();
+		d.put("method", "learned hour-of-week pattern and occupancy model");
+		d.put("localTime", when);
+		d.put("observedRate", observedRate);
+		d.put("slotsAtThisHour", support);
+		d.put("modelProbability", modelProbability);
+		d.put("quietAtMost", cfg.quietHourMaxRate());
+		return Optional.of(new Finding(AnomalyKind.UNUSUAL_ACTIVITY, "motion", AnomalySeverity.WARNING, explanation, d, at));
+	}
+
 	/** A value outside what the sensor can really produce (DHT22 temperature range), or an ADC reading pinned at its maximum. */
 	public static Optional<Finding> plausibility(Metric metric, SensorSample sample, MlProperties.Anomaly cfg) {
 		Double value = metric.of(sample);

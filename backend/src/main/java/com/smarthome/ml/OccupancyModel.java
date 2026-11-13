@@ -10,11 +10,22 @@ import java.time.ZonedDateTime;
 public record OccupancyModel(int version, int bucketMinutes, String timeZone, double[] weights, int[] cellN, int[] cellPos,
 		double baseRate) {
 
-	public static final int CURRENT_VERSION = 1;
+	/** 1: time features only. 2: plus the hour-of-week motion frequency. Stored version-1 models keep working. */
+	public static final int CURRENT_VERSION = 2;
 
 	/** Probability that the PIR sees motion at the given local time. */
 	public double probability(ZonedDateTime local) {
-		return LogisticRegression.probability(weights, OccupancyFeatures.of(local));
+		return LogisticRegression.probability(weights, features(local));
+	}
+
+	/** The feature vector this model version uses. */
+	public double[] features(ZonedDateTime local) {
+		double[] x = OccupancyFeatures.of(local);
+		if (version < 2) {
+			return x;
+		}
+		int c = OccupancyFeatures.cell(local);
+		return OccupancyFeatures.withFrequency(x, OccupancyFeatures.frequency(cellN[c], cellPos[c], baseRate));
 	}
 
 	/** Number of training slots from the same weekday-and-hour. */

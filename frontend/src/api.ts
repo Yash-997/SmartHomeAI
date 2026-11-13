@@ -253,11 +253,146 @@ export interface OccupancyStatus {
   counts: MlCounts | null
   requirements: MlRequirements
   metrics: MlMetrics | null
-  data: { motionReadings: number; firstAt: string | null; lastAt: string | null }
+  data: MlDataSummary
   method: string
+  /** true while there is no usable model: the page shows "Collecting historical data". */
+  collecting: boolean
+  /** 0 before the first model; +1 for every new model. */
+  modelVersion: number
+  lastSuccessfulTrainingAt: string | null
+  trainingRuns: number
+  featureSet: string
+  autoTraining: boolean
 }
 
-export type AnomalyKind = 'STATISTICAL_OUTLIER' | 'OUT_OF_RANGE' | 'STUCK_VALUE' | 'MISSING_DATA' | 'STALE_DATA'
+/** The training dataset as it would be built now from stored readings (same rules as training). */
+export interface MlDatasetSnapshot {
+  usableSlots: number
+  slotsWithMotion: number
+  slotsWithoutMotion: number
+  sparseSlotsIgnored: number
+  distinctDays: number
+  enoughForTraining: boolean
+  checkedAt: string
+}
+
+/**
+ * What has really been collected. totalRecords counts every stored telemetry message. Fields an older backend does not
+ * send are null (unknown), never filled in with a guess: see normalizeStatus in insights.ts.
+ */
+export interface MlDataSummary {
+  totalRecords: number | null
+  collectionStartedAt: string | null
+  recordsLast24h: number | null
+  motionReadings: number
+  firstAt: string | null
+  lastAt: string | null
+  dataset: MlDatasetSnapshot | null
+}
+
+export interface TrainingRun {
+  id: string
+  /** null when the run produced no model. */
+  version: number | null
+  trigger: 'MANUAL' | 'AUTO'
+  status: 'READY' | 'LOW_QUALITY' | 'INSUFFICIENT_DATA'
+  reason: string | null
+  becameCurrent: boolean
+  trainedAt: string
+  durationMs: number
+  timeZone: string
+  featureSet: string
+  samples: number
+  usableSlots: number
+  slotsWithMotion: number
+  distinctDays: number
+  dataFrom: string | null
+  dataTo: string | null
+  metrics: MlMetrics | null
+}
+
+/** One hour of the learned week. dayOfWeek 1 = Monday ... 7 = Sunday. */
+export interface PatternCell {
+  dayOfWeek: number
+  hour: number
+  slots: number
+  observedRate: number | null
+  modelProbability: number
+}
+
+export interface OccupancyPattern {
+  timeZone: string
+  modelVersion: number
+  quality: string
+  trainedAt: string
+  overallRate: number
+  cells: PatternCell[]
+}
+
+export interface Connectivity {
+  currentState: 'ONLINE' | 'OFFLINE' | 'NEVER_CONNECTED'
+  offlineEventsLast7Days: number
+  events: { state: 'ONLINE' | 'OFFLINE'; reason: string; changedAt: string; lastSeenAt: string | null }[]
+}
+
+// ---- SYNTHETIC dataset (demonstration only; never the device's real data) ----
+export type SyntheticScenario = 'FROZEN_SENSOR' | 'GAS_SATURATION' | 'MISSING_VALUES' | 'DISCONNECTION' | 'UNUSUAL_MOTION'
+export interface SyntheticSplit { slots: number; withMotion: number; from: string | null; to: string | null }
+export interface SyntheticDataset {
+  id: string
+  generatorVersion: string
+  seed: number
+  days: number
+  timeZone: string
+  startsAt: string
+  endsAt: string
+  recordCount: number
+  offlineMinutes: number
+  connectivityEvents: number
+  occupiedShare: number
+  motionShare: number
+  createdAt: string
+  scenarios: { scenario: SyntheticScenario; description: string; from: string; to: string }[]
+}
+export interface SyntheticTraining {
+  lambda: number
+  validationLogLoss: Record<string, number>
+  train: SyntheticSplit
+  validation: SyntheticSplit
+  test: SyntheticSplit
+  embargoMinutes: number
+  embargoDropped: number
+  scenarioSlotsExcluded: number
+  agreementWithTrueOccupancy: { slots: number; accuracy: number; majorityBaseline: number } | null
+}
+export interface SyntheticAnomalyEvaluation {
+  from: string
+  to: string
+  normalHours: number
+  scenarios: { scenario: SyntheticScenario; description: string; from: string; to: string; expectedRule: string; detected: boolean; delayMinutes: number | null; detectedAs: string | null }[]
+  falsePositiveEpisodes: Record<string, number>
+  totalFalsePositiveEpisodes: number
+  method: string
+}
+export interface SyntheticStatus {
+  source: 'SYNTHETIC'
+  notice: string
+  dataset: SyntheticDataset | null
+  model: { state: 'READY' | 'LOW_QUALITY' | 'INSUFFICIENT_DATA'; version: number; trainedAt: string; timeZone: string; message: string | null; metrics: MlMetrics | null } | null
+  training: SyntheticTraining | null
+  anomalies: SyntheticAnomalyEvaluation | null
+  generated: boolean
+}
+export interface SyntheticForecast { source: 'SYNTHETIC'; notice: string; modelVersion: number; timeZone: string; points: Prediction[] }
+
+export type AnomalyKind =
+  | 'STATISTICAL_OUTLIER'
+  | 'OUT_OF_RANGE'
+  | 'STUCK_VALUE'
+  | 'MISSING_DATA'
+  | 'STALE_DATA'
+  | 'SUDDEN_CHANGE'
+  | 'UNUSUAL_ACTIVITY'
 export type AnomalySeverity = 'INFO' | 'WARNING' | 'CRITICAL'
 export type AnomalyStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED' | 'DISMISSED' | 'AUTO_RESOLVED'
 
@@ -602,6 +737,16 @@ export const api = {
   trainOccupancy: (deviceId: string, timeZone: string) =>
     request<OccupancyStatus>(`/api/devices/${deviceId}/ml/occupancy/train?timeZone=${encodeURIComponent(timeZone)}`, { method: 'POST' }, true),
   predictNow: (deviceId: string) => request<Prediction>(`/api/devices/${deviceId}/ml/occupancy/predict`, {}, true),
+  syntheticStatus: (deviceId: string) => request<SyntheticStatus>(`/api/devices/${deviceId}/ml/synthetic`, {}, true),
+  generateSynthetic: (deviceId: string) => request<SyntheticStatus>(`/api/devices/${deviceId}/ml/synthetic/generate`, { method: 'POST' }, true),
+  trainSynthetic: (deviceId: string) => request<SyntheticStatus>(`/api/devices/${deviceId}/ml/synthetic/train`, { method: 'POST' }, true),
+  syntheticForecast: (deviceId: string, hours = 24) =>
+    request<SyntheticForecast>(`/api/devices/${deviceId}/ml/synthetic/forecast?hours=${hours}`, {}, true),
+  trainingRuns: (deviceId: string, limit = 10) =>
+    request<TrainingRun[]>(`/api/devices/${deviceId}/ml/occupancy/runs?limit=${limit}`, {}, true),
+  occupancyPattern: (deviceId: string) => request<OccupancyPattern>(`/api/devices/${deviceId}/ml/occupancy/pattern`, {}, true),
+  connectivity: (deviceId: string, limit = 10) =>
+    request<Connectivity>(`/api/devices/${deviceId}/ml/connectivity?limit=${limit}`, {}, true),
   forecast: (deviceId: string, hours = 24) =>
     request<Forecast>(`/api/devices/${deviceId}/ml/occupancy/forecast?hours=${hours}&stepMinutes=60`, {}, true),
   anomalies: (deviceId: string, status: 'active' | 'all') =>

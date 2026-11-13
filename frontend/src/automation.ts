@@ -205,3 +205,50 @@ export function buildRequest(d: Draft): RuleRequest {
     cooldownSeconds: Number(d.cooldown),
   }
 }
+
+// ---- starting points ------------------------------------------------------------------------------------------------
+
+export interface RuleTemplate {
+  id: string
+  title: string
+  blurb: string
+  /** Short "when → then" line shown on the card. */
+  when: string
+  then: string
+  /** Fields applied on top of an empty draft. Everything stays editable before saving. */
+  draft: Partial<Draft>
+}
+
+/** Examples built only from what the rule engine supports (PIR LED and gas LED outputs, sensor and schedule triggers). */
+export const RULE_TEMPLATES: RuleTemplate[] = [
+  {
+    id: 'warm-room', title: 'Warm room indicator', blurb: 'Light the indicator when the room gets warm.',
+    when: 'Temperature above 28 °C', then: 'PIR LED on',
+    draft: { name: 'Warm room indicator', conditions: [{ sensor: 'temperature', operator: '>', value: '28' }], action: 'set_pir_led', actionValue: 'on' },
+  },
+  {
+    id: 'motion-light', title: 'Light on motion', blurb: 'Turn the indicator on whenever movement is seen.',
+    when: 'Motion detected', then: 'PIR LED on',
+    draft: { name: 'Light on motion', conditions: [{ sensor: 'motion', operator: '==', value: 'true' }], action: 'set_pir_led', actionValue: 'on', cooldown: '30' },
+  },
+  {
+    id: 'humid-room', title: 'Humidity watch', blurb: 'Flag a damp room with the indicator light.',
+    when: 'Humidity above 70 %', then: 'PIR LED on',
+    draft: { name: 'Humidity watch', conditions: [{ sensor: 'humidity', operator: '>', value: '70' }], action: 'set_pir_led', actionValue: 'on' },
+  },
+  {
+    id: 'evening', title: 'Evening light', blurb: 'Switch the indicator on at a set time every day.',
+    when: 'Every day at 19:00', then: 'PIR LED on',
+    draft: { name: 'Evening light', trigger: 'SCHEDULE', time: '19:00', conditions: [], action: 'set_pir_led', actionValue: 'on' },
+  },
+  {
+    id: 'bedtime', title: 'Lights out', blurb: 'Switch the indicator off at bedtime.',
+    when: 'Every day at 23:00', then: 'PIR LED off',
+    draft: { name: 'Lights out', trigger: 'SCHEDULE', time: '23:00', conditions: [], action: 'set_pir_led', actionValue: 'off' },
+  },
+  {
+    id: 'gas-led', title: 'Gas reading high', blurb: 'Force the gas LED on when the raw reading climbs. Adjust the threshold to your sensor.',
+    when: 'Gas reading above 2000', then: 'Gas LED on',
+    draft: { name: 'Gas reading high', conditions: [{ sensor: 'gas', operator: '>', value: '2000' }], action: 'set_gas_led', actionValue: 'on' },
+  },
+]

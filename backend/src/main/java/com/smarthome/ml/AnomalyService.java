@@ -116,12 +116,13 @@ public class AnomalyService {
 		}
 	}
 
-	/** Closes event-style anomalies (outliers, out-of-range) that have not recurred for a while. */
+	/** Closes event-style anomalies (outliers, out-of-range, sudden changes, unusual activity) that have not recurred for a while. */
 	@Transactional
 	public void autoResolveQuiet(UUID deviceUuid, Instant now) {
 		Instant cutoff = now.minus(props.anomaly().autoResolveMinutes(), ChronoUnit.MINUTES);
 		for (MlAnomaly a : anomalies.findByDeviceUuidAndStatusInAndLastSeenAtBefore(deviceUuid, ACTIVE, cutoff)) {
-			if (a.getKind() == AnomalyKind.STATISTICAL_OUTLIER || a.getKind() == AnomalyKind.OUT_OF_RANGE) {
+			if (a.getKind() == AnomalyKind.STATISTICAL_OUTLIER || a.getKind() == AnomalyKind.OUT_OF_RANGE
+					|| a.getKind() == AnomalyKind.SUDDEN_CHANGE || a.getKind() == AnomalyKind.UNUSUAL_ACTIVITY) {
 				a.close(AnomalyStatus.AUTO_RESOLVED, "Not seen again for " + props.anomaly().autoResolveMinutes() + " minutes.", now);
 				anomalies.save(a);
 			}

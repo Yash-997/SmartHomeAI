@@ -8,6 +8,7 @@ import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,6 +17,7 @@ import com.smarthome.security.SecurityEventRepository;
 import com.smarthome.automation.AutomationRuleRepository;
 import com.smarthome.ml.MlAnomalyRepository;
 import com.smarthome.ml.MlModelRepository;
+import com.smarthome.ml.MlTrainingRunRepository;
 import com.smarthome.command.CommandActions;
 import com.smarthome.command.CommandDtos.CommandResponse;
 import com.smarthome.command.CommandDtos.LedState;
@@ -45,12 +47,16 @@ public class DeviceService {
 	private final MlAnomalyRepository mlAnomalies;
 	private final RagChunkStore ragChunks;
 	private final SecurityEventRepository securityEvents;
+	private final MlTrainingRunRepository mlRuns;
+	private final DeviceStatusEventRepository statusEvents;
+	private final JdbcTemplate jdbc;
 	private final Clock clock;
 	private final Duration staleAfter;
 
 	public DeviceService(DeviceRepository devices, TelemetryRepository telemetry, BrokerAccess broker,
 			DeviceCommandRepository commandRepo, DeviceReportedStateRepository stateRepo, AutomationRuleRepository automationRules, MlModelRepository mlModels,
-			MlAnomalyRepository mlAnomalies, RagChunkStore ragChunks, SecurityEventRepository securityEvents, Clock clock,
+			MlAnomalyRepository mlAnomalies, RagChunkStore ragChunks, SecurityEventRepository securityEvents, MlTrainingRunRepository mlRuns,
+			DeviceStatusEventRepository statusEvents, JdbcTemplate jdbc, Clock clock,
 			@Value("${app.telemetry.stale-after-seconds:90}") long staleAfterSeconds) {
 		this.devices = devices;
 		this.telemetry = telemetry;
@@ -62,6 +68,9 @@ public class DeviceService {
 		this.mlAnomalies = mlAnomalies;
 		this.ragChunks = ragChunks;
 		this.securityEvents = securityEvents;
+		this.mlRuns = mlRuns;
+		this.statusEvents = statusEvents;
+		this.jdbc = jdbc;
 		this.clock = clock;
 		this.staleAfter = Duration.ofSeconds(staleAfterSeconds);
 	}
@@ -112,6 +121,10 @@ public class DeviceService {
 		ragChunks.deleteForDevice(device.getId());         // anything the assistant indexed about it
 		ragChunks.deleteSource(ownerId, "DEVICE_STATUS", "devices:overview");   // the owner's device list also names it
 		securityEvents.deleteAllForDevice(device.getId());                      // security history of this device
+		mlRuns.deleteAllForDevice(device.getId());                              // training history
+		statusEvents.deleteAllForDevice(device.getId());                        // connectivity history
+		// Synthetic datasets generated for this device (their readings and events go with them: ON DELETE CASCADE).
+		jdbc.update("delete from synthetic_datasets where device_uuid = ?", device.getId());
 		broker.revokeDevice(device.getDeviceId());
 	}
 

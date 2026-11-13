@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api, ApiError, type Command, type CommandStatus, type Device, type OutputSpec } from '../api'
 import { formatAge, liveStatus } from '../telemetry'
+import { ChevronDownIcon } from '../ui/icons'
 
 const STATUS: Record<CommandStatus, { label: string; tone: string }> = {
   PENDING: { label: 'Sending...', tone: 'bg-slate-600 text-slate-100' },
@@ -61,8 +62,8 @@ export default function OutputControls({
   if (device.outputs.length === 0) return null
 
   return (
-    <div className="mt-4 border-t border-slate-700 pt-3">
-      <h4 className="text-sm font-semibold">Outputs</h4>
+    <div className="mt-5">
+      <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Outputs</h4>
 
       {state && state.gasWarning && !stateStale && (
         <p className="alert-critical mt-2 rounded bg-red-500/20 p-2 text-sm font-medium text-red-300" role="alert">
@@ -76,20 +77,20 @@ export default function OutputControls({
         </p>
       )}
 
-      <ul className="mt-2 space-y-3">
+      <ul className="mt-3 space-y-3">
         {device.outputs.map((o) => {
           const rep = reported(device, o.action)
           return (
-            <li key={o.action}>
+            <li key={o.action} className="rounded-xl bg-slate-900/60 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-sm">{o.label}</span>
+                <span className="text-sm font-medium">{o.label}</span>
                 <span className={`text-xs ${stateStale ? 'text-amber-300' : 'text-slate-400'}`}>
                   {rep
                     ? `Device reports: ${rep.on ? 'ON' : 'off'} (${rep.mode})${stateAge !== null ? `, ${formatAge(stateAge)} ago` : ''}${stateStale ? ' · STALE' : ''}`
                     : 'No state reported by the device yet'}
                 </span>
               </div>
-              <div className="mt-1 flex gap-2">
+              <div className="mt-2 inline-flex gap-1 rounded-xl bg-slate-950/60 p-1" role="group" aria-label={o.label}>
                 {o.values.map((v) => {
                   const active = rep !== null && !stateStale && rep.mode === v
                   const key = `${o.action}:${v}`
@@ -100,8 +101,8 @@ export default function OutputControls({
                       disabled={!online || busy !== null}
                       onClick={() => send(o, v)}
                       aria-pressed={active}
-                      className={`rounded-md px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-40 ${
-                        active ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-slate-700 hover:bg-slate-600'
+                      className={`min-w-14 rounded-lg px-3.5 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                        active ? 'bg-indigo-400 text-slate-950 shadow-sm hover:bg-indigo-300' : 'text-slate-300 hover:bg-slate-700'
                       }`}
                     >
                       {busy === key ? '...' : (VALUE_LABEL[v] ?? v)}
@@ -122,9 +123,12 @@ export default function OutputControls({
       {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
 
       {device.recentCommands.length > 0 && (
-        <div className="mt-3">
-          <h5 className="text-xs font-medium text-slate-400">Recent commands</h5>
-          <ul className="mt-1 space-y-1">
+        <details className="group mt-3 rounded-xl bg-slate-900/40">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs font-medium text-slate-400 marker:hidden hover:text-slate-100 [&::-webkit-details-marker]:hidden">
+            <span>Recent commands ({device.recentCommands.length})</span>
+            <ChevronDownIcon width={16} height={16} aria-hidden="true" className="transition-transform group-open:rotate-180" />
+          </summary>
+          <ul className="space-y-2 px-3 pb-3">
             {device.recentCommands.map((c) => (
               <li key={c.id} className="flex flex-wrap items-center gap-2 text-xs">
                 <span className="text-slate-300">{describe(c, device.outputs)}</span>
@@ -135,7 +139,7 @@ export default function OutputControls({
               </li>
             ))}
           </ul>
-        </div>
+        </details>
       )}
     </div>
   )

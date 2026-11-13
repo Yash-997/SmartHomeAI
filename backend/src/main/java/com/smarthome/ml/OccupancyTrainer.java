@@ -81,25 +81,20 @@ public final class OccupancyTrainer {
 							+ " of each are needed. Wait for more varied data.", counts, null, null, nTrain, nTest);
 		}
 
-		LogisticRegression.Fit evalFit = LogisticRegression.fit(matrix(train), labels(train), cfg.ridgeLambda(), MAX_ITERATIONS);
+		// The hour-of-week frequencies for evaluation come from the training part only, so the test slots stay unseen.
+		Cells trainCells = Cells.of(train);
+		LogisticRegression.Fit evalFit = LogisticRegression.fit(trainingMatrix(train, trainCells), labels(train), cfg.ridgeLambda(), MAX_ITERATIONS);
 		double[] testProbabilities = new double[nTest];
 		for (int i = 0; i < nTest; i++) {
-			testProbabilities[i] = LogisticRegression.probability(evalFit.weights(), test.get(i).x());
+			testProbabilities[i] = LogisticRegression.probability(evalFit.weights(), trainCells.features(test.get(i), false));
 		}
 		Metrics metrics = ModelMetrics.evaluate(testProbabilities, labels(test), cfg.decisionThreshold(), trainPositives / (double) nTrain);
 
 		// The stored model uses every slot.
-		LogisticRegression.Fit finalFit = LogisticRegression.fit(matrix(all), labels(all), cfg.ridgeLambda(), MAX_ITERATIONS);
-		int[] cellN = new int[168];
-		int[] cellPos = new int[168];
-		for (Bucket b : all) {
-			cellN[b.cell()]++;
-			if (b.occupied()) {
-				cellPos[b.cell()]++;
-			}
-		}
+		Cells allCells = Cells.of(all);
+		LogisticRegression.Fit finalFit = LogisticRegression.fit(trainingMatrix(all, allCells), labels(all), cfg.ridgeLambda(), MAX_ITERATIONS);
 		OccupancyModel model = new OccupancyModel(OccupancyModel.CURRENT_VERSION, cfg.bucketMinutes(), zone.getId(),
-				finalFit.weights(), cellN, cellPos, positives / (double) n);
+				finalFit.weights(), allCells.n(), allCells.pos(), allCells.baseRate());
 
 		boolean beatsBaseline = metrics.logLoss() < metrics.baselineLogLoss();
 		boolean ranksWell = metrics.auc() == null || metrics.auc() >= MIN_AUC;
@@ -113,15 +108,42 @@ public final class OccupancyTrainer {
 				+ "more data or a more regular routine may help.", counts, model, metrics, nTrain, nTest);
 	}
 
-	private static double[][] matrix(List<Bucket> b) {
+	/** Per hour of the week: how many slots, and how many with motion. Shared with the synthetic trainer. */
+	record Cells(int[] n, int[] pos, double baseRate) {
+
+		static Cells of(List<Bucket> buckets) {
+			int[] n = new int[168];
+			int[] pos = new int[168];
+			int positives = 0;
+			for (Bucket b : buckets) {
+				n[b.cell()]++;
+				if (b.occupied()) {
+					pos[b.cell()]++;
+					positives++;
+				}
+			}
+			return new Cells(n, pos, buckets.isEmpty() ? 0 : positives / (double) buckets.size());
+		}
+
+		/** Version-2 features of a slot. {@code leaveOut}: the slot is in these counts, so remove its own label first. */
+		double[] features(Bucket b, boolean leaveOut) {
+			int c = b.cell();
+			int slots = n[c] - (leaveOut ? 1 : 0);
+			int motion = pos[c] - (leaveOut && b.occupied() ? 1 : 0);
+			return OccupancyFeatures.withFrequency(b.x(), OccupancyFeatures.frequency(slots, motion, baseRate));
+		}
+	}
+
+	/** Training rows: each slot's frequency feature leaves its own label out (no target leakage). */
+	static double[][] trainingMatrix(List<Bucket> b, Cells cells) {
 		double[][] x = new double[b.size()][];
 		for (int i = 0; i < x.length; i++) {
-			x[i] = b.get(i).x();
+			x[i] = cells.features(b.get(i), true);
 		}
 		return x;
 	}
 
-	private static int[] labels(List<Bucket> b) {
+	static int[] labels(List<Bucket> b) {
 		int[] y = new int[b.size()];
 		for (int i = 0; i < y.length; i++) {
 			y[i] = b.get(i).occupied() ? 1 : 0;

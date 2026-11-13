@@ -50,9 +50,9 @@ export default function Register() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-900 p-6 text-slate-100">
-      <form onSubmit={submit} noValidate className="w-full max-w-sm space-y-4 rounded-xl bg-slate-800 p-6 shadow-lg">
-        <h1 className="text-2xl font-bold">Create account</h1>
+    <main className="flex min-h-screen items-center justify-center p-6 text-slate-100">
+      <form onSubmit={submit} noValidate className="card w-full max-w-sm space-y-4 p-7">
+        <h1 className="text-2xl font-semibold tracking-tight">Create account</h1>
         {formError && <p role="alert" className="rounded bg-red-500/10 p-2 text-sm text-red-400">{formError}</p>}
         <Field id="username" label="Username" autoComplete="username" value={username}
           onChange={(e) => setUsername(e.target.value)} error={errors.username} />
@@ -62,7 +62,7 @@ export default function Register() {
           onChange={(e) => setPassword(e.target.value)} error={errors.password} />
         <Field id="confirm" label="Confirm password" type="password" autoComplete="new-password" value={confirm}
           onChange={(e) => setConfirm(e.target.value)} error={errors.confirm} />
-        <button disabled={busy} className="w-full rounded-md bg-indigo-600 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-60">
+        <button disabled={busy} className="btn-primary w-full rounded-lg py-2.5 text-sm">
           {busy ? 'Creating account...' : 'Register'}
         </button>
         <p className="text-center text-sm text-slate-400">

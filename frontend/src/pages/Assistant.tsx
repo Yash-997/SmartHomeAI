@@ -10,7 +10,8 @@ import {
 } from '../api'
 import ChatMessageView from '../components/ChatMessageView'
 import CommandCard from '../components/CommandCard'
-import Header from '../components/Header'
+import { ChatIcon, ChevronDownIcon, PlusIcon } from '../ui/icons'
+import Shell from '../components/Shell'
 import KnowledgePanel from '../components/KnowledgePanel'
 import VoicePanel from '../components/VoicePanel'
 import { FINAL, outcomeText, type CommandItem } from '../voice/commands'
@@ -338,19 +339,16 @@ export default function Assistant() {
   )
 
   return (
-    <main className="min-h-screen bg-slate-900 p-4 text-slate-100 sm:p-6">
-      <div className="mx-auto max-w-6xl space-y-6">
-        <Header />
-
+    <Shell wide>
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold">Assistant</h2>
-            <p className="text-sm text-slate-400">Ask about your own devices, readings, anomalies and automation rules, by typing or by voice. Answers cite the stored records they came from.</p>
+            <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Assistant</h1>
+            <p className="mt-1.5 text-sm text-slate-400">Ask about your home by typing or by voice.</p>
           </div>
-          <div role="radiogroup" aria-label="Input mode" className="inline-flex rounded-lg border border-slate-700 bg-slate-800 p-1 text-sm">
+          <div role="radiogroup" aria-label="Input mode" className="inline-flex rounded-xl bg-slate-800 p-1 text-sm">
             {(['text', 'voice'] as const).map((m) => (
               <button key={m} type="button" role="radio" aria-checked={mode === m} onClick={() => setMode(m)}
-                className={`rounded-md px-4 py-1.5 ${mode === m ? 'bg-slate-700 text-slate-100 shadow-[inset_0_-2px_0_var(--color-indigo-400)]' : 'text-slate-300 hover:text-slate-100'}`}>
+                className={`rounded-lg px-5 py-1.5 font-medium transition-colors ${mode === m ? 'bg-indigo-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'}`}>
                 {m === 'text' ? 'Text' : 'Voice'}
               </button>
             ))}
@@ -364,49 +362,78 @@ export default function Assistant() {
         {status && (
           <div className="space-y-2">
             {!status.llm.configured && (
-              <p className="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-300" role="status">
+              <p className="rounded-xl bg-amber-500/10 p-3 text-sm text-amber-300" role="status">
                 No AI language model is set up ({status.llm.note}). You will still get the matching stored records as references, but no written answers.
                 See the README section on environment variables.
               </p>
             )}
-            <p className="rounded-lg bg-slate-800 p-3 text-xs text-slate-400" role="note">
-              {status.notice} Model: {status.llm.configured ? `${status.llm.provider} / ${status.llm.model}` : 'none'} · search: {status.embedding.provider}
-              {status.embedding.note ? ` (${status.embedding.note})` : ''} · indexed: {status.index.yourChunks} of your records, {status.index.sharedChunks} help passages.
-            </p>
+            <details className="text-xs text-slate-500">
+              <summary className="cursor-pointer hover:text-slate-300">About this assistant</summary>
+              <p className="mt-2 max-w-3xl rounded-xl bg-slate-800 p-3 text-slate-400" role="note">
+                {status.notice} Model: {status.llm.configured ? `${status.llm.provider} / ${status.llm.model}` : 'none'} · search: {status.embedding.provider}
+                {status.embedding.note ? ` (${status.embedding.note})` : ''} · indexed: {status.index.yourChunks} of your records, {status.index.sharedChunks} help passages.
+              </p>
+            </details>
           </div>
         )}
 
-        <div className="grid gap-6 lg:grid-cols-[16rem_1fr]">
+        <div className="grid gap-6 lg:grid-cols-[15rem_1fr] xl:grid-cols-[16rem_1fr]">
           <aside className="order-2 space-y-6 lg:order-1">
-            <section className="rounded-xl bg-slate-800 p-4" aria-labelledby="conv-heading">
+            <section className="card p-4" aria-labelledby="conv-heading">
               <div className="flex items-center justify-between">
                 <h3 id="conv-heading" className="font-semibold">Conversations</h3>
-                <button type="button" onClick={() => select(null)} className="rounded-md bg-slate-700 px-2 py-1 text-xs hover:bg-slate-600">New</button>
               </div>
               {conversations === null && <p className="mt-2 text-sm text-slate-400">Loading...</p>}
               {conversations?.length === 0 && <p className="mt-2 text-sm text-slate-500">No conversations yet.</p>}
               <ul className="mt-2 space-y-1">
                 {conversations?.map((c) => (
-                  <li key={c.id} className={`flex items-center justify-between gap-1 rounded px-2 py-1.5 text-sm ${c.id === active ? 'bg-slate-700' : 'hover:bg-slate-700/50'}`}>
-                    <button type="button" onClick={() => select(c.id)} className="truncate text-left" title={c.title} aria-current={c.id === active}>{c.title}</button>
+                  <li key={c.id} className={`flex items-center justify-between gap-1 rounded-lg px-2.5 py-2 text-sm transition-colors ${c.id === active ? 'bg-slate-700' : 'hover:bg-slate-700/50'}`}>
+                    <button type="button" onClick={() => select(c.id)} className="min-w-0 flex-1 truncate text-left" title={c.title} aria-current={c.id === active}>{c.title}</button>
                     <button type="button" onClick={() => remove(c.id)} className="text-xs text-slate-400 hover:text-red-300" aria-label={`Delete conversation ${c.title}`}>x</button>
                   </li>
                 ))}
               </ul>
             </section>
-            {status && <KnowledgePanel maxChars={status.limits.maxDocumentChars} maxDocs={status.limits.maxDocuments} onChanged={loadStatus} />}
+            {status && (
+              <details className="card group">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-2xl p-4 text-sm font-semibold marker:hidden hover:bg-slate-700/30 [&::-webkit-details-marker]:hidden">
+                  Notes
+                  <ChevronDownIcon width={16} height={16} aria-hidden="true" className="text-slate-400 transition-transform group-open:rotate-180" />
+                </summary>
+                <div className="flat-panel px-4 pb-4">
+                  <KnowledgePanel maxChars={status.limits.maxDocumentChars} maxDocs={status.limits.maxDocuments} onChanged={loadStatus} />
+                </div>
+              </details>
+            )}
           </aside>
 
-          <section className="order-1 flex min-h-[28rem] flex-col gap-4 rounded-xl bg-slate-800/60 p-4 lg:order-2" aria-label="Chat">
-            <div className="max-h-[60vh] flex-1 space-y-4 overflow-y-auto pb-2" aria-live="polite">
+          <section className="card order-1 flex min-h-[26rem] flex-col gap-4 p-4 sm:p-5 lg:order-2" aria-label="Chat">
+            <div className="flex items-center justify-between gap-2 border-b border-slate-700/60 pb-3">
+              <p className="flex min-w-0 items-start gap-2 text-sm font-medium text-slate-300"
+                title={active ? (conversations?.find((c) => c.id === active)?.title ?? 'Conversation') : 'New conversation'}>
+                <ChatIcon aria-hidden="true" width={16} height={16} className="mt-0.5 shrink-0 text-indigo-400" />
+                <span className="line-clamp-2 break-words">{active ? (conversations?.find((c) => c.id === active)?.title ?? 'Conversation') : 'New conversation'}</span>
+              </p>
+              <button type="button" onClick={() => select(null)} className="btn-secondary inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs">
+                <PlusIcon width={14} height={14} />New conversation
+              </button>
+            </div>
+            <div className="max-h-[62vh] min-h-[9rem] flex-1 space-y-4 overflow-y-auto pb-2 pr-1" aria-live="polite">
               {loadingThread && !threadError && <p className="text-sm text-slate-400">Loading conversation...</p>}
               {threadError && <p className="rounded bg-red-500/10 p-2 text-sm text-red-400">{threadError}</p>}
               {!loadingThread && count === 0 && shownItems.length === 0 && pending === null && (
-                <div className="rounded-lg bg-slate-900 p-4 text-sm text-slate-300">
-                  <p>{mode === 'voice' ? 'Tap the microphone and say, for example:' : 'Try one of these:'}</p>
-                  <ul className="mt-2 space-y-1">
+                <div className="py-4">
+                  <p className="text-lg font-semibold">{mode === 'voice' ? 'Tap the microphone and say, for example:' : 'What would you like to know?'}</p>
+                  {mode !== 'voice' && <p className="mt-1 text-sm text-slate-400">Try one of these:</p>}
+                  <ul className="mt-4 grid gap-3 sm:grid-cols-2">
                     {(mode === 'voice' ? VOICE_EXAMPLES : EXAMPLES).map((ex) => (
-                      <li key={ex}><button type="button" onClick={() => void submit(ex, false)} className="text-left text-indigo-300 hover:underline">{ex}</button></li>
+                      <li key={ex}>
+                        <button type="button" onClick={() => void submit(ex, false)}
+                          className="flex h-full w-full items-start gap-3 rounded-2xl bg-slate-900/60 p-4 text-left text-sm text-slate-200 transition hover:-translate-y-0.5 hover:bg-slate-700">
+                          <ChatIcon aria-hidden="true" width={18} height={18} className="mt-0.5 shrink-0 text-indigo-400" />
+                          <span>{ex}</span>
+                        </button>
+                      </li>
                     ))}
                   </ul>
                 </div>
@@ -420,8 +447,13 @@ export default function Assistant() {
               {shownItems.filter((i) => i.afterIndex >= count).map(card)}
               {pending !== null && (
                 <>
-                  <div className="flex justify-end"><p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-indigo-600/70 px-4 py-2 text-sm">{pending}</p></div>
-                  <p className="text-sm text-slate-400" role="status">Searching your records and thinking...</p>
+                  <div className="flex justify-end"><p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-slate-700 px-4 py-2.5 text-sm">{pending}</p></div>
+                  <p className="flex items-center gap-2 text-sm text-slate-400" role="status">
+                    <span aria-hidden="true" className="flex gap-1">
+                      {[0, 1, 2].map((i) => <span key={i} className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-400" style={{ animationDelay: `${i * 120}ms` }} />)}
+                    </span>
+                    Searching your records and thinking...
+                  </p>
                 </>
               )}
               <div ref={endRef} />
@@ -457,13 +489,13 @@ export default function Assistant() {
             {error && <p className="rounded bg-red-500/10 p-2 text-sm text-red-400" role="alert">{error}</p>}
             {mode === 'text' && recognition.error && <p className="rounded bg-red-500/10 p-2 text-sm text-red-400" role="alert">{recognition.error}</p>}
 
-            <form onSubmit={(e) => { e.preventDefault(); void submit(input, false) }} className="flex items-end gap-2">
+            <form onSubmit={(e) => { e.preventDefault(); void submit(input, false) }} className="flex items-end gap-2 border-t border-slate-700/60 pt-4">
               <label className="flex-1 text-xs text-slate-400">
                 <span className="sr-only">Your question</span>
-                <textarea aria-label="Your question" value={input} onChange={(e) => setInput(e.target.value)} maxLength={max} rows={mode === 'voice' ? 1 : 2}
+                <textarea id="assistant-input" aria-label="Your question" value={input} onChange={(e) => setInput(e.target.value)} maxLength={max} rows={mode === 'voice' ? 1 : 2}
                   placeholder={mode === 'voice' ? 'Or type here...' : listening ? 'Listening...' : 'Ask about your devices...'}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(input, false) } }}
-                  className="w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100" />
+                  className="w-full resize-none rounded-2xl border border-slate-600 bg-slate-900 px-4 py-3 text-[15px] text-slate-100 placeholder:text-slate-500" />
                 {mode === 'text' && listening && recognition.interim && (
                   <span className="block truncate text-slate-300" data-testid="dictation-preview">Hearing: “{recognition.interim}”</span>
                 )}
@@ -472,18 +504,17 @@ export default function Assistant() {
               {mode === 'text' && recognition.supported && (
                 <button type="button" onClick={toggleMic} disabled={busy && !listening} aria-pressed={listening}
                   aria-label={listening ? 'Stop dictation' : 'Dictate with the microphone'}
-                  className={`mb-5 rounded-md px-3 py-2 text-sm disabled:opacity-60 ${listening ? 'mic-live bg-red-500/80 hover:bg-red-500' : 'bg-slate-700 hover:bg-slate-600'}`}>
+                  className={`mb-5 rounded-xl px-4 py-3 text-sm font-medium disabled:opacity-60 ${listening ? 'mic-live bg-red-500/80 hover:bg-red-500' : 'btn-secondary'}`}>
                   {listening ? 'Stop' : 'Mic'}
                 </button>
               )}
               <button type="submit" disabled={busy || input.trim() === ''}
-                className="mb-5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-60">
+                className="btn-primary mb-5 rounded-xl px-6 py-3 text-sm disabled:opacity-60">
                 {busy ? 'Asking...' : mode === 'voice' ? 'Send' : 'Ask'}
               </button>
             </form>
           </section>
         </div>
-      </div>
-    </main>
+    </Shell>
   )
 }

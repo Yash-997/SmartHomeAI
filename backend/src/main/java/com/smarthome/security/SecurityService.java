@@ -236,13 +236,20 @@ public class SecurityService {
 	 * since that alert, and it reported motion shortly before this reading.
 	 */
 	private boolean sameEpisode(UUID device, SecurityEvent lastAlert, Instant at) {
+		// "Before this reading" must exclude the reading itself. The database keeps microseconds while the clock has finer
+		// precision, so the stored copy of this reading can land a fraction of a microsecond before `at`. A device never
+		// sends two reports within SELF_MARGIN (motion-start reports are at least 2 s apart), so anything closer is this one.
+		Instant before = at.minus(SELF_MARGIN);
 		boolean endedSince = telemetry.existsByDeviceUuidAndMotionAndReceivedAtGreaterThanEqualAndReceivedAtLessThan(device, Boolean.FALSE,
-				lastAlert.getCreatedAt(), at);
+				lastAlert.getCreatedAt(), before);
 		if (endedSince) {
 			return false;
 		}
-		return telemetry.existsByDeviceUuidAndMotionAndReceivedAtGreaterThanEqualAndReceivedAtLessThan(device, Boolean.TRUE, at.minus(EPISODE_GAP), at);
+		return telemetry.existsByDeviceUuidAndMotionAndReceivedAtGreaterThanEqualAndReceivedAtLessThan(device, Boolean.TRUE, at.minus(EPISODE_GAP), before);
 	}
+
+	/** Readings this close to the one being judged are that same reading (see sameEpisode). */
+	static final Duration SELF_MARGIN = Duration.ofMillis(500);
 
 	/** Reports devices that went offline while the owner is in an armed mode. One event per outage. */
 	public int sweepOffline() {

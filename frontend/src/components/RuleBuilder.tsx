@@ -34,12 +34,14 @@ interface Props {
   devices: Device[]
   /** Existing rule to edit, or null to create a new one. */
   rule: Rule | null
+  /** Prefilled values when starting from a template. */
+  initial?: Partial<Draft>
   onClose: () => void
   onSaved: () => void
 }
 
-export default function RuleBuilder({ devices, rule, onClose, onSaved }: Props) {
-  const [draft, setDraft] = useState<Draft>(() => (rule ? draftFromRule(rule) : emptyDraft(devices[0]?.id ?? '')))
+export default function RuleBuilder({ devices, rule, initial, onClose, onSaved }: Props) {
+  const [draft, setDraft] = useState<Draft>(() => (rule ? draftFromRule(rule) : { ...emptyDraft(devices[0]?.id ?? ''), ...initial }))
   const [errors, setErrors] = useState<FieldErrors>({})
   const [formError, setFormError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -93,7 +95,7 @@ export default function RuleBuilder({ devices, rule, onClose, onSaved }: Props) 
 
   return (
     <div className="fixed inset-0 z-10 overflow-y-auto bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Automation rule">
-      <form onSubmit={submit} noValidate className="mx-auto my-4 w-full max-w-2xl space-y-5 rounded-xl bg-slate-800 p-6 shadow-lg">
+      <form onSubmit={submit} noValidate className="mx-auto my-4 w-full max-w-2xl space-y-5 rounded-2xl bg-slate-800 p-6 shadow-lg sm:p-8">
         <h2 className="text-lg font-semibold">{rule ? 'Edit rule' : 'New automation rule'}</h2>
         {formError && <p className="rounded bg-red-500/10 p-2 text-sm text-red-400">{formError}</p>}
 
@@ -117,8 +119,8 @@ export default function RuleBuilder({ devices, rule, onClose, onSaved }: Props) 
         </div>
 
         {/* ---- when ---- */}
-        <fieldset className="space-y-3 rounded-lg border border-slate-700 p-4">
-          <legend className="px-1 text-sm font-medium">When</legend>
+        <fieldset className="space-y-3 rounded-xl bg-slate-900/60 p-4">
+          <legend className="px-1 text-xs font-semibold uppercase tracking-wider text-indigo-400">When</legend>
           <div className="flex flex-wrap gap-4 text-sm">
             <label className="flex items-center gap-2">
               <input type="radio" name="trigger" checked={draft.trigger === 'TELEMETRY'} onChange={() => set('trigger', 'TELEMETRY')} />
@@ -147,7 +149,7 @@ export default function RuleBuilder({ devices, rule, onClose, onSaved }: Props) 
                 <div className="mt-1 flex flex-wrap gap-2">
                   {DAYS.map((day) => (
                     <button key={day} type="button" onClick={() => toggleDay(day)} aria-pressed={draft.days.includes(day)}
-                      className={`rounded-md px-3 py-1 text-sm ${draft.days.includes(day) ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-slate-600'}`}>
+                      className={`rounded-lg px-3 py-1 text-sm ${draft.days.includes(day) ? 'bg-indigo-400 font-medium text-slate-950' : 'bg-slate-700 hover:bg-slate-600'}`}>
                       {day}
                     </button>
                   ))}
@@ -166,7 +168,7 @@ export default function RuleBuilder({ devices, rule, onClose, onSaved }: Props) 
                 <div className="flex overflow-hidden rounded-md text-xs" role="group" aria-label="Combine conditions with">
                   {(['AND', 'OR'] as const).map((l) => (
                     <button key={l} type="button" onClick={() => set('logic', l)} aria-pressed={draft.logic === l}
-                      className={`px-3 py-1 ${draft.logic === l ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-slate-600'}`}>
+                      className={`px-3 py-1 ${draft.logic === l ? 'bg-indigo-400 font-medium text-slate-950' : 'bg-slate-700 hover:bg-slate-600'}`}>
                       {l === 'AND' ? 'All of these' : 'Any of these'}
                     </button>
                   ))}
@@ -202,7 +204,7 @@ export default function RuleBuilder({ devices, rule, onClose, onSaved }: Props) 
                     )}
                     {sensor.unit && <span className="text-xs text-slate-500">{sensor.unit}</span>}
                     <button type="button" onClick={() => set('conditions', draft.conditions.filter((_, idx) => idx !== i))}
-                      className="ml-auto rounded-md bg-slate-700 px-2 py-1 text-xs hover:bg-slate-600" aria-label={`Remove condition ${i + 1}`}>Remove</button>
+                      className="btn-secondary ml-auto rounded-lg px-2.5 py-1 text-xs" aria-label={`Remove condition ${i + 1}`}>Remove</button>
                   </div>
                   {err ? <p className="text-xs text-red-400">{err}</p> : errors[`conditions[${i}].operator`] ? (
                     <p className="text-xs text-red-400">{errors[`conditions[${i}].operator`]}</p>
@@ -214,7 +216,7 @@ export default function RuleBuilder({ devices, rule, onClose, onSaved }: Props) 
             })}
             <button type="button" disabled={draft.conditions.length >= 10}
               onClick={() => set('conditions', [...draft.conditions, { sensor: 'temperature', operator: '>', value: '' }])}
-              className="rounded-md bg-slate-700 px-3 py-1 text-sm hover:bg-slate-600 disabled:opacity-40">
+              className="btn-secondary rounded-lg px-3 py-1.5 text-sm disabled:opacity-40">
               Add condition
             </button>
             <p className="text-xs text-slate-500">A missing or stale reading never counts as zero: the rule simply waits.</p>
@@ -222,8 +224,8 @@ export default function RuleBuilder({ devices, rule, onClose, onSaved }: Props) 
         </fieldset>
 
         {/* ---- then ---- */}
-        <fieldset className="space-y-3 rounded-lg border border-slate-700 p-4">
-          <legend className="px-1 text-sm font-medium">Then</legend>
+        <fieldset className="space-y-3 rounded-xl bg-slate-900/60 p-4">
+          <legend className="px-1 text-xs font-semibold uppercase tracking-wider text-indigo-400">Then</legend>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Output" error={errors['action.action']}>
               <select className={`${input} ${border(!!errors['action.action'])}`} value={draft.action} onChange={(e) => changeAction(e.target.value)}>
@@ -258,8 +260,8 @@ export default function RuleBuilder({ devices, rule, onClose, onSaved }: Props) 
         </label>
 
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-md bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600">Cancel</button>
-          <button disabled={busy} className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-60">
+          <button type="button" onClick={onClose} className="btn-secondary rounded-lg px-4 py-2 text-sm">Cancel</button>
+          <button disabled={busy} className="btn-primary rounded-lg px-5 py-2 text-sm disabled:opacity-60">
             {busy ? 'Saving...' : rule ? 'Save changes' : 'Create rule'}
           </button>
         </div>

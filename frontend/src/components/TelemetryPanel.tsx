@@ -4,17 +4,17 @@ import AnimatedNumber from '../ui/AnimatedNumber'
 import Sparkline from '../ui/Sparkline'
 import { useTelemetryHistory } from './useTelemetryHistory'
 
-const BADGE: Record<Connection, { label: string; dot: string; hint: string }> = {
-  ONLINE: { label: 'Online', dot: 'bg-green-500', hint: 'Sending data right now.' },
-  OFFLINE: { label: 'Offline', dot: 'bg-red-500', hint: 'Not heard from recently.' },
-  NEVER_CONNECTED: { label: 'Never connected', dot: 'bg-slate-400', hint: 'Paired, but has not sent any data yet.' },
+const BADGE: Record<Connection, { label: string; dot: string; tone: string; hint: string }> = {
+  ONLINE: { label: 'Online', dot: 'bg-green-400', tone: 'bg-green-500/15 text-green-300', hint: 'Sending data right now.' },
+  OFFLINE: { label: 'Offline', dot: 'bg-red-400', tone: 'bg-red-500/15 text-red-300', hint: 'Not heard from recently.' },
+  NEVER_CONNECTED: { label: 'Never connected', dot: 'bg-slate-400', tone: 'bg-slate-700 text-slate-300', hint: 'Paired, but has not sent any data yet.' },
 }
 
 export function ConnectionBadge({ connection }: { connection: Connection }) {
   const b = BADGE[connection]
   return (
-    <span className="flex items-center gap-2 rounded-full bg-slate-700 px-3 py-1 text-xs" title={b.hint}>
-      <span className={`h-2 w-2 rounded-full ${b.dot}`} />
+    <span className={`flex shrink-0 items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ${b.tone}`} title={b.hint}>
+      <span aria-hidden="true" className={`h-2 w-2 rounded-full ${b.dot}`} />
       {b.label}
     </span>
   )
@@ -22,9 +22,9 @@ export function ConnectionBadge({ connection }: { connection: Connection }) {
 
 function Tile({ label, value, note, missing, dim, num }: { label: string; value: string; note?: string; missing: boolean; dim: boolean; num?: { n: number; decimals: number; suffix: string } }) {
   return (
-    <div className={`rounded-md bg-slate-900 p-3 transition-opacity duration-200 ${dim ? 'opacity-50' : ''}`}>
-      <div className="text-xs text-slate-500">{label}</div>
-      <div key={num && !missing ? 'num' : value} className={`${num && !missing ? '' : 'value-tick '}mt-1 text-lg font-semibold ${missing ? 'text-slate-500' : ''}`}>
+    <div className={`rounded-xl bg-slate-900/60 p-3.5 transition-opacity duration-200 ${dim ? 'opacity-50' : ''}`}>
+      <div className="text-xs font-medium text-slate-400">{label}</div>
+      <div key={num && !missing ? 'num' : value} className={`${num && !missing ? '' : 'value-tick '}mt-1 text-xl font-semibold tracking-tight ${missing ? 'text-slate-500' : ''}`}>
         {num && !missing ? <AnimatedNumber value={num.n} decimals={num.decimals} suffix={num.suffix} /> : value}
       </div>
       <div className="mt-0.5 text-[11px] text-slate-500">{missing ? 'no reading' : note}</div>
