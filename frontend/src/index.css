@@ -1,82 +1,100 @@
 @import "tailwindcss";
 
 /*
- * Design tokens: Silver x Graphite x Yellow.
- * The components are written with Tailwind's `slate` (neutrals) and `indigo` (accent) names. Instead of renaming hundreds of
- * class names, those two scales are redefined here: slate becomes the graphite/silver palette and indigo becomes the warm
- * yellow accent. The status colours (green, amber, red) are muted so they carry meaning without shouting.
+ * VÉYRA design tokens: light burgundy x white.
+ * Components are written with Tailwind's `slate` (neutrals) and `indigo` (accent) names. Instead of renaming hundreds of
+ * class names, those two scales are redefined here: slate becomes the light surface / dark text ramp and indigo becomes
+ * the burgundy accent (burgundy primary buttons with white text). Semantic colours: green = success, amber = warning,
+ * red = critical, sky = information. Text shades are deepened so they read on white (AA contrast or better).
  *
- *   slate-950  #17191C  page background          slate-900  #202328  wells inside cards, inputs
- *   slate-800  #292D32  cards                    slate-700  #32373D  elevated surfaces, borders, quiet buttons
- *   slate-100  #E8EAED  primary text             slate-400  #A6ADB5  secondary text     slate-500  #7D858E  muted text
- *   indigo-600 #F5C542  the accent (buttons)     indigo-500 #FFD65A  its hover          indigo-400 #F5C542  accent text
+ *   slate-950  #F8F6F4  page background        slate-900  #FBF9F8  sidebar, wells inside cards, inputs
+ *   slate-800  #FFFFFF  cards                  slate-700  #F2E9ED  light burgundy surfaces (chips, hover, tooltips)
+ *   slate-600  #E6D8DE  stronger surface       slate-100  #292B35  primary text    slate-400 #74717A secondary text
  */
 @theme {
-  --font-sans: ui-sans-serif, system-ui, "Segoe UI Variable", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-sans: "Manrope", ui-sans-serif, system-ui, "Segoe UI Variable", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Cormorant Garamond", "Iowan Old Style", Georgia, serif;
 
-  --color-slate-50: #f5f6f7;
-  --color-slate-100: #e8eaed;
-  --color-slate-200: #d3d7dc;
-  --color-slate-300: #bcc2c8;
-  --color-slate-400: #a6adb5;
-  --color-slate-500: #7d858e;
-  --color-slate-600: #444a52;
-  --color-slate-700: #32373d;
-  --color-slate-800: #292d32;
-  --color-slate-900: #202328;
-  --color-slate-950: #17191c;
+  --color-slate-50: #1f2029;
+  --color-slate-100: #292b35;
+  --color-slate-200: #3f3d47;
+  --color-slate-300: #55525c;
+  --color-slate-400: #74717a;
+  --color-slate-500: #74717a;
+  --color-slate-600: #e6d8de;
+  --color-slate-700: #f2e9ed;
+  --color-slate-800: #ffffff;
+  --color-slate-900: #fbf9f8;
+  --color-slate-950: #f8f6f4;
 
-  --color-indigo-50: #fff9e0;
-  --color-indigo-100: #fff1b8;
-  --color-indigo-200: #ffe58a;
-  --color-indigo-300: #ffd65a;
-  --color-indigo-400: #f5c542;
-  --color-indigo-500: #ffd65a;
-  --color-indigo-600: #f5c542;
-  --color-indigo-700: #d9a92a;
-  --color-indigo-800: #8a6d1b;
-  --color-indigo-900: #4a3b12;
-  --color-indigo-950: #2b220a;
+  --color-indigo-50: #3a1a27;
+  --color-indigo-100: #4f2737;
+  --color-indigo-200: #5e2f42;
+  --color-indigo-300: #8b5369;
+  --color-indigo-400: #713b50;
+  --color-indigo-500: #8b5369;
+  --color-indigo-600: #713b50;
+  --color-indigo-700: #a66d82;
+  --color-indigo-800: #e7d3db;
+  --color-indigo-900: #f2e9ed;
+  --color-indigo-950: #f8f1f4;
 
-  /* Status colours, muted. */
-  --color-green-300: #9cc9ab;
-  --color-green-400: #86b998;
-  --color-green-500: #69a37f;
-  --color-emerald-200: #b6dbc2;
-  --color-emerald-300: #9cc9ab;
-  --color-emerald-400: #86b998;
-  --color-amber-200: #f0cf9b;
-  --color-amber-300: #e8b35f;
-  --color-amber-400: #de9f43;
-  --color-amber-500: #c98a2e;
-  --color-red-200: #e8b4b4;
-  --color-red-300: #dc9494;
-  --color-red-400: #d07d7d;
-  --color-red-500: #c26060;
-  --color-red-600: #a94c4c;
-  --color-red-900: #5a2a2a;
-  --color-red-950: #3a1c1c;
+  /* Semantic status colours: fills use the palette values, text shades are deepened to read on white. */
+  --color-green-300: #1e7a58;
+  --color-green-400: #1e7a58;
+  --color-green-500: #269b70;
+  --color-green-600: #1f855f;
+  --color-green-700: #186a4c;
+  --color-emerald-200: #186a4c;
+  --color-emerald-300: #1e7a58;
+  --color-emerald-400: #1e7a58;
+  --color-emerald-500: #269b70;
+  --color-amber-200: #7a4f10;
+  --color-amber-300: #8a5a12;
+  --color-amber-400: #b27a24;
+  --color-amber-500: #d99a35;
+  --color-red-200: #a3343e;
+  --color-red-300: #b83e48;
+  --color-red-400: #c2434d;
+  --color-red-500: #d9535d;
+  --color-red-600: #c2434d;
+  --color-red-900: #f8dcdf;
+  --color-red-950: #fcedef;
+  --color-sky-300: #3a6c9f;
+  --color-sky-400: #3f75ad;
+  --color-sky-500: #477fba;
+  --color-violet-100: #4c2a85;
+  --color-violet-200: #5b34a0;
+
+  /* Brand surfaces used by the new components. */
+  --color-brand: #713b50;
+  --color-line: #e9e3e5;
+  --color-line-strong: #dcd2d6;
 
   --radius-md: 0.625rem;
   --radius-lg: 0.875rem;
   --radius-xl: 1.125rem;
   --radius-2xl: 1.5rem;
 
-  /* Cards sit on the page with a hairline and a soft drop, not a heavy shadow. */
-  --shadow-lg: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 14px 30px -18px rgb(0 0 0 / 0.65);
+  /* Cards: a hairline highlight on top and a soft, warm drop. */
+  --shadow-lg: 0 1px 2px rgb(41 43 53 / 0.04), 0 12px 32px -20px rgb(113 59 80 / 0.22);
+  --shadow-glow: 0 0 0 1px rgb(113 59 80 / 0.12), 0 16px 40px -20px rgb(113 59 80 / 0.35);
 
   --ease-out-soft: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
 @layer base {
   html {
-    color-scheme: dark;
+    color-scheme: light;
     background-color: var(--color-slate-950);
+    background-image: radial-gradient(120% 80% at 0% 0%, rgb(166 109 130 / 0.10), transparent 60%),
+      radial-gradient(90% 70% at 100% 100%, rgb(242 233 237 / 0.9), transparent 65%);
+    background-attachment: fixed;
     -webkit-text-size-adjust: 100%;
   }
 
   body {
-    background-color: var(--color-slate-950);
+    background-color: transparent;
     color: var(--color-slate-100);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -86,7 +104,7 @@
   }
 
   h1, h2, h3, h4 {
-    letter-spacing: -0.01em;
+    letter-spacing: -0.015em;
     text-wrap: balance;
   }
 
@@ -96,7 +114,7 @@
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: var(--color-slate-600) transparent;
+    scrollbar-color: #d6c4cb transparent;
   }
 
   /* One clear focus style for keyboard users, everywhere. */
@@ -126,12 +144,21 @@
  * Every card in the app is `rounded-xl bg-slate-800`; give them one hairline border in the palette.
  * ---------------------------------------------------------------------------------------- */
 [class~="rounded-xl"][class~="bg-slate-800"] {
-  border: 1px solid var(--color-slate-700);
-  transition: border-color 200ms ease;
+  border: 1px solid var(--color-line);
+  background-image: none;
+  box-shadow: var(--shadow-lg);
+  transition: border-color 220ms ease, box-shadow 220ms ease, transform 220ms var(--ease-out-soft);
 }
 
 section[class~="rounded-xl"][class~="bg-slate-800"]:hover {
-  border-color: var(--color-slate-600);
+  border-color: var(--color-line-strong);
+}
+
+/* Hairlines everywhere use the one subtle palette border. */
+[class~="border-slate-700"],
+[class~="border-slate-800"],
+[class~="divide-slate-700"] > * + * {
+  border-color: var(--color-line);
 }
 
 /* ------------------------------------------------------------------------------------------
@@ -190,8 +217,8 @@ textarea {
 }
 
 @keyframes alert-ring {
-  from { box-shadow: 0 0 0 0 rgb(248 113 113 / 0.4); }
-  to { box-shadow: 0 0 0 7px rgb(248 113 113 / 0); }
+  from { box-shadow: 0 0 0 0 rgb(217 83 93 / 0.45); }
+  to { box-shadow: 0 0 0 7px rgb(217 83 93 / 0); }
 }
 
 /* Pages are transitioned by Framer Motion (see App.tsx). Let the faint backdrop show through the page background. */
@@ -200,12 +227,12 @@ main[class~="bg-slate-900"] {
 }
 
 /* ------------------------------------------------------------------------------------------
- * The accent: yellow surfaces always carry dark text, including text inside them.
+ * The accent: burgundy surfaces always carry white text, including text inside them.
  * ---------------------------------------------------------------------------------------- */
 [class~="bg-indigo-600"],
 [class~="bg-indigo-500"],
 [class~="bg-indigo-400"] {
-  color: #1a1708;
+  color: #ffffff;
 }
 
 [class~="bg-indigo-600"] *,
@@ -220,19 +247,26 @@ main[class~="bg-slate-900"] {
 
 /* Small helpers used by the redesigned screens. */
 .btn-primary {
-  background-color: var(--color-indigo-400);
-  color: #1a1708;
-  font-weight: 600;
+  background-color: #713b50;
+  background-image: linear-gradient(180deg, #7d4459, #713b50);
+  color: #ffffff;
+  font-weight: 650;
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.14) inset, 0 8px 20px -12px rgb(113 59 80 / 0.7);
 }
-.btn-primary:hover:not(:disabled) { background-color: var(--color-indigo-300); }
-.btn-primary:disabled { opacity: 0.5; }
+.btn-primary:hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #8b5369, #7a4258);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.14) inset, 0 10px 26px -10px rgb(113 59 80 / 0.55);
+  transform: translateY(-1px);
+}
+.btn-primary:active:not(:disabled) { transform: translateY(0) scale(0.985); }
+.btn-primary:disabled { opacity: 0.55; }
 
 .btn-secondary {
-  border: 1px solid var(--color-slate-600);
-  background-color: transparent;
+  border: 1px solid var(--color-line-strong);
+  background-color: #ffffff;
   color: var(--color-slate-100);
 }
-.btn-secondary:hover:not(:disabled) { background-color: var(--color-slate-700); border-color: var(--color-slate-500); }
+.btn-secondary:hover:not(:disabled) { background-color: var(--color-slate-700); border-color: #cdbfc5; }
 .btn-secondary:disabled { opacity: 0.5; }
 
 .btn-danger {
@@ -244,8 +278,9 @@ main[class~="bg-slate-900"] {
 
 .card {
   border-radius: var(--radius-xl);
-  border: 1px solid var(--color-slate-700);
+  border: 1px solid var(--color-line);
   background-color: var(--color-slate-800);
+  background-image: none;
   box-shadow: var(--shadow-lg);
 }
 
@@ -298,7 +333,7 @@ details[open] > :not(summary) {
 
 .skeleton {
   background-color: var(--color-slate-700);
-  background-image: linear-gradient(90deg, transparent 0%, rgb(232 234 237 / 0.06) 50%, transparent 100%);
+  background-image: linear-gradient(90deg, transparent 0%, rgb(255 255 255 / 0.65) 50%, transparent 100%);
   background-size: 60% 100%;
   background-repeat: no-repeat;
   animation: shimmer 1.6s ease-in-out infinite;
@@ -319,21 +354,21 @@ details[open] > :not(summary) {
   width: 70vmax;
   height: 70vmax;
   border-radius: 9999px;
-  opacity: 0.05;
+  opacity: 0.12;
   will-change: transform;
 }
 
 .backdrop-shape-a {
   top: -35vmax;
   left: -20vmax;
-  background: radial-gradient(closest-side, var(--color-slate-400), transparent);
+  background: radial-gradient(closest-side, #a66d82, transparent);
   animation: drift-a 55s ease-in-out infinite alternate;
 }
 
 .backdrop-shape-b {
   bottom: -40vmax;
   right: -25vmax;
-  background: radial-gradient(closest-side, var(--color-indigo-400), transparent);
+  background: radial-gradient(closest-side, #e7d3db, transparent);
   animation: drift-b 70s ease-in-out infinite alternate;
 }
 
@@ -366,4 +401,162 @@ details[open] > :not(summary) {
   padding: 0;
   border: 0;
   border-radius: 0;
+}
+
+/* ------------------------------------------------------------------------------------------
+ * VÉYRA brand layer
+ * ---------------------------------------------------------------------------------------- */
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: 0;
+}
+
+.brand-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-indigo-400);
+}
+
+/* Inputs: a soft burgundy glow on focus instead of a hard ring. */
+.field-input {
+  border: 1px solid var(--color-line-strong);
+  background-color: #ffffff;
+  transition: border-color 180ms ease, box-shadow 220ms ease, background-color 180ms ease;
+}
+.field-input:hover { border-color: #cdbfc5; }
+.field-input:focus,
+.field-input:focus-visible {
+  outline: none;
+  border-color: var(--color-indigo-400);
+  background-color: #ffffff;
+  box-shadow: 0 0 0 4px rgb(113 59 80 / 0.12);
+}
+.field-input[aria-invalid="true"] { border-color: var(--color-red-400); }
+
+/* Login: two slow light fields drift behind the card (paused under reduced motion). */
+@keyframes aurora-a {
+  0% { transform: translate3d(-10%, -6%, 0) rotate(0deg) scale(1); }
+  100% { transform: translate3d(12%, 10%, 0) rotate(25deg) scale(1.15); }
+}
+@keyframes aurora-b {
+  0% { transform: translate3d(8%, 10%, 0) rotate(0deg) scale(1.1); }
+  100% { transform: translate3d(-12%, -8%, 0) rotate(-20deg) scale(0.95); }
+}
+.aurora {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(60px);
+  will-change: transform;
+}
+.aurora-a {
+  width: 60vmax; height: 60vmax; top: -25vmax; left: -15vmax;
+  background: radial-gradient(closest-side, rgb(166 109 130 / 0.30), transparent);
+  animation: aurora-a 28s ease-in-out infinite alternate;
+}
+.aurora-b {
+  width: 55vmax; height: 55vmax; bottom: -30vmax; right: -15vmax;
+  background: radial-gradient(closest-side, rgb(231 211 219 / 0.75), transparent);
+  animation: aurora-b 34s ease-in-out infinite alternate;
+}
+.grid-lines {
+  background-image: linear-gradient(rgb(113 59 80 / 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(113 59 80 / 0.05) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+}
+
+/* A live status dot: a soft ring breathes a few times when the state changes, then rests. */
+@keyframes status-ping {
+  0% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+  100% { box-shadow: 0 0 0 7px transparent; opacity: 1; }
+}
+.status-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background-color: currentColor;
+}
+.status-dot-live {
+  animation: status-ping 1.6s ease-out 3;
+}
+
+/* The assistant's typing indicator. */
+@keyframes typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}
+.typing-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background-color: var(--color-indigo-300);
+  animation: typing 1.1s ease-in-out infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-dot:nth-child(3) { animation-delay: 0.3s; }
+
+/* Indeterminate progress (report generation, sign-in). */
+@keyframes progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
+.progress-indeterminate {
+  position: relative;
+  overflow: hidden;
+  height: 3px;
+  border-radius: 9999px;
+  background-color: var(--color-slate-700);
+}
+.progress-indeterminate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--color-indigo-400), transparent);
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+
+/* Spinner used inside buttons while a request runs. */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border-radius: 9999px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 0.7s linear infinite;
+}
+
+/* Cards lift slightly under the pointer (only where hover exists). */
+@media (hover: hover) {
+  .lift { transition: transform 220ms var(--ease-out-soft), box-shadow 220ms ease, border-color 220ms ease; }
+  .lift:hover { transform: translateY(-2px); box-shadow: var(--shadow-glow); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora,
+  .typing-dot,
+  .status-dot-live,
+  .progress-indeterminate::after,
+  .spinner {
+    animation: none !important;
+  }
+  .lift:hover,
+  .btn-primary:hover:not(:disabled) { transform: none; }
+}
+
+/* ML heatmap: cells fade in in reading order and ease between values when the model is retrained. */
+@keyframes heat-in {
+  from { opacity: 0; transform: scale(0.6); }
+  to { opacity: 1; transform: none; }
+}
+.heat-cell {
+  animation: heat-in 260ms var(--ease-out-soft) both;
+  transition: background-color 400ms ease;
 }

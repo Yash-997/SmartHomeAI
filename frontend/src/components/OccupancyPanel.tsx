@@ -25,7 +25,7 @@ function ForecastChart({ forecast }: { forecast: Forecast }) {
           <div key={p.at} className="flex h-full flex-1 flex-col justify-end"
             title={`${p.dayOfWeek} ${String(p.hour).padStart(2, '0')}:00 · ${pct(p.probability)} chance of motion · evidence: ${p.support} similar slots${p.reliable ? '' : ' (low)'}`}>
             <div
-              className={`chart-bar w-full rounded-t-sm ${p.reliable ? 'bg-indigo-400' : 'bg-[repeating-linear-gradient(45deg,#7f8b87,#7f8b87_3px,#3a4749_3px,#3a4749_6px)]'}`}
+              className={`chart-bar w-full rounded-t-sm ${p.reliable ? 'bg-indigo-400' : 'bg-[repeating-linear-gradient(45deg,#c9a3b2,#c9a3b2_3px,#f2e9ed_3px,#f2e9ed_6px)]'}`}
               style={{ height: `${Math.max(2, p.probability * 100)}%`, animationDelay: `${i * 8}ms` }}
             />
           </div>

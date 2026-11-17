@@ -46,13 +46,15 @@ export default function HomeHero({ devices, elapsed }: { devices: Device[] | nul
 
   return (
     <section aria-labelledby="home-heading" className="card relative overflow-hidden p-5 sm:p-6">
-      <div aria-hidden="true" className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-indigo-400/10 blur-3xl" />
+      <div aria-hidden="true" className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full bg-indigo-400/15 blur-3xl" />
+      <div aria-hidden="true" className="pointer-events-none absolute -bottom-24 left-1/3 h-48 w-72 rounded-full bg-slate-600/40 blur-3xl" />
       <div className="relative flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="text-sm text-slate-400">
             {now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })} · {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </p>
-          <h1 id="home-heading" className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
+          <p aria-hidden="true" className="brand-eyebrow mt-3">VÉYRA Home</p>
+          <h1 id="home-heading" className="font-display mt-1 text-3xl font-semibold leading-tight sm:text-[40px]">
             {greeting(now.getHours())}, {user?.username}
           </h1>
         </div>
@@ -64,7 +66,7 @@ export default function HomeHero({ devices, elapsed }: { devices: Device[] | nul
             : 'border-green-400/30 bg-green-400/10 text-green-300'
           }`}
         >
-          {loading ? 'Checking your home…' : needsAttention ? <><AlertIcon width={16} height={16} />Needs attention</> : <><CheckIcon width={16} height={16} />All clear</>}
+          {loading ? <><span className="spinner h-3.5 w-3.5" aria-hidden="true" />Checking your home…</> : needsAttention ? <><AlertIcon width={16} height={16} />Needs attention</> : <><CheckIcon width={16} height={16} />All clear</>}
         </div>
       </div>
 

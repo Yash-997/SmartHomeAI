@@ -41,7 +41,7 @@ function Card({ r, onDone }: { r: Recommendation; onDone: (id: string, outcome: 
       )}
       <p className="mt-2 text-xs text-slate-500">Nothing changes until you approve.</p>
       <div className="mt-2 flex gap-2">
-        <button type="button" disabled={busy} onClick={() => act('approve')} className="rounded-md bg-green-700 px-3 py-1.5 text-xs font-medium hover:bg-green-600 disabled:opacity-60">
+        <button type="button" disabled={busy} onClick={() => act('approve')} className="rounded-md bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-60">
           {r.actionType === 'DISABLE_RULE' ? 'Approve and disable the rule' : 'Approve and create rule'}
         </button>
         <button type="button" disabled={busy} onClick={() => act('dismiss')} className="rounded-md bg-slate-700 px-3 py-1.5 text-xs hover:bg-slate-600 disabled:opacity-60">Dismiss</button>

@@ -1,8 +1,10 @@
 import { useState, type FormEvent } from 'react'
+import { AnimatePresence, m } from 'motion/react'
 import { Link, Navigate } from 'react-router-dom'
 import { ApiError } from '../api'
 import { useAuth } from '../auth'
 import Field from '../components/Field'
+import { AuthCard } from './AuthLayout'
 
 // Mirrors the backend rules; the backend remains the source of truth.
 function validate(username: string, email: string, password: string, confirm: string) {
@@ -14,6 +16,13 @@ function validate(username: string, email: string, password: string, confirm: st
   if (confirm !== password) v.confirm = 'Passwords do not match'
   return v
 }
+
+/** A strength hint only; the backend requires 8-72 characters and nothing more. */
+function strengthOf(password: string) {
+  if (password.length < 8) return 0
+  return [password.length >= 8, password.length >= 12, /[A-Z]/.test(password) && /[a-z]/.test(password), /\d|[^A-Za-z0-9]/.test(password)].filter(Boolean).length
+}
+const STRENGTH = ['Too short', 'Weak', 'Fair', 'Good', 'Strong']
 
 export default function Register() {
   const { user, register } = useAuth()
@@ -49,26 +58,49 @@ export default function Register() {
     }
   }
 
+  const strength = strengthOf(password)
+  const barColor = strength >= 3 ? 'bg-green-400' : strength === 2 ? 'bg-amber-400' : 'bg-red-400'
+
   return (
-    <main className="flex min-h-screen items-center justify-center p-6 text-slate-100">
-      <form onSubmit={submit} noValidate className="card w-full max-w-sm space-y-4 p-7">
-        <h1 className="text-2xl font-semibold tracking-tight">Create account</h1>
-        {formError && <p role="alert" className="rounded bg-red-500/10 p-2 text-sm text-red-400">{formError}</p>}
-        <Field id="username" label="Username" autoComplete="username" value={username}
+    <AuthCard title="Create your account" subtitle="Set up VÉYRA for your home in a minute.">
+      <form onSubmit={submit} noValidate className="space-y-4" aria-busy={busy}>
+        <AnimatePresence initial={false}>
+          {formError && (
+            <m.p key="err" role="alert" className="rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2.5 text-sm text-red-200"
+              initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+              {formError}
+            </m.p>
+          )}
+        </AnimatePresence>
+        <Field id="username" label="Username" autoComplete="username" value={username} hint="3-30 characters: letters, digits, '.', '_' or '-'"
           onChange={(e) => setUsername(e.target.value)} error={errors.username} />
-        <Field id="email" label="Email" type="email" autoComplete="email" value={email}
+        <Field id="email" label="Email" type="email" autoComplete="email" value={email} placeholder="you@example.com"
           onChange={(e) => setEmail(e.target.value)} error={errors.email} />
-        <Field id="password" label="Password" type="password" autoComplete="new-password" value={password}
-          onChange={(e) => setPassword(e.target.value)} error={errors.password} />
+        <div>
+          <Field id="password" label="Password" type="password" autoComplete="new-password" value={password}
+            onChange={(e) => setPassword(e.target.value)} error={errors.password} />
+          {password && (
+            <div className="mt-2 flex items-center gap-3">
+              <div className="flex flex-1 gap-1" aria-hidden="true">
+                {[0, 1, 2, 3].map((i) => (
+                  <span key={i} className={`h-1 flex-1 rounded-full transition-colors duration-300 ${i < strength ? barColor : 'bg-slate-700'}`} />
+                ))}
+              </div>
+              <span className="w-28 text-right text-[11px] text-slate-400">Strength: {STRENGTH[strength]}</span>
+            </div>
+          )}
+        </div>
         <Field id="confirm" label="Confirm password" type="password" autoComplete="new-password" value={confirm}
           onChange={(e) => setConfirm(e.target.value)} error={errors.confirm} />
-        <button disabled={busy} className="btn-primary w-full rounded-lg py-2.5 text-sm">
-          {busy ? 'Creating account...' : 'Register'}
+        <button disabled={busy} className="btn-primary !mt-6 flex w-full items-center justify-center gap-2 rounded-lg py-3 text-sm">
+          {busy && <span className="spinner" aria-hidden="true" />}
+          {busy ? 'Creating account...' : 'Create account'}
         </button>
+        {busy && <div className="progress-indeterminate" aria-hidden="true" />}
         <p className="text-center text-sm text-slate-400">
-          Already registered? <Link to="/login" className="text-indigo-400 hover:underline">Sign in</Link>
+          Already registered? <Link to="/login" className="font-semibold text-indigo-300 hover:text-indigo-200 hover:underline">Sign in</Link>
         </p>
       </form>
-    </main>
+    </AuthCard>
   )
 }

@@ -22,7 +22,7 @@ export const ACTION_LABEL: Record<string, string> = {
 export const OUTCOME: Record<ExecutionOutcome, { label: string; tone: string }> = {
   EXECUTED: { label: 'Sent', tone: 'bg-green-500/20 text-green-300' },
   FAILED: { label: 'Failed', tone: 'bg-red-500/20 text-red-300' },
-  SKIPPED_COOLDOWN: { label: 'Cooling down', tone: 'bg-slate-600 text-slate-200' },
+  SKIPPED_COOLDOWN: { label: 'Cooling down', tone: 'bg-sky-500/20 text-sky-300' },
   SKIPPED_OFFLINE: { label: 'Device offline', tone: 'bg-amber-500/20 text-amber-300' },
   SKIPPED_NO_DATA: { label: 'No data', tone: 'bg-amber-500/20 text-amber-300' },
   SKIPPED_STALE_DATA: { label: 'Data too old', tone: 'bg-amber-500/20 text-amber-300' },

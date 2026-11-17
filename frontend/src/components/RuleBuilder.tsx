@@ -94,7 +94,7 @@ export default function RuleBuilder({ devices, rule, initial, onClose, onSaved }
   }
 
   return (
-    <div className="fixed inset-0 z-10 overflow-y-auto bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Automation rule">
+    <div className="fixed inset-0 z-10 overflow-y-auto bg-[#292b35]/35 p-4" role="dialog" aria-modal="true" aria-label="Automation rule">
       <form onSubmit={submit} noValidate className="mx-auto my-4 w-full max-w-2xl space-y-5 rounded-2xl bg-slate-800 p-6 shadow-lg sm:p-8">
         <h2 className="text-lg font-semibold">{rule ? 'Edit rule' : 'New automation rule'}</h2>
         {formError && <p className="rounded bg-red-500/10 p-2 text-sm text-red-400">{formError}</p>}

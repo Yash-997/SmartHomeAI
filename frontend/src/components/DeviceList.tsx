@@ -60,8 +60,8 @@ function Row({ device, elapsed, onChanged }: { device: Device; elapsed: number; 
         <div className="min-w-0">
           <p className="truncate font-medium">{device.name}</p>
           <p className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
-            <span aria-hidden="true" className={`h-2 w-2 rounded-full ${DOT[connection]}`} />
-            {WORD[connection]}
+            <span key={connection} aria-hidden="true" className={`status-dot-live h-2 w-2 rounded-full ${DOT[connection]} ${DOT[connection].replace('bg-', 'text-')}`} />
+            <span key={`w-${connection}`} className="value-tick">{WORD[connection]}</span>
             {lastSeenAge !== null && <span className="text-slate-500">· seen {formatAge(lastSeenAge)} ago</span>}
           </p>
         </div>

@@ -30,17 +30,35 @@ class PdfRendererTest {
 		Visual bar = Visual.bar("Motion", "detections", List.of("00", "01"), List.of(new VisualSeries("detections", List.of(3.0, 0.0))));
 		ReportContent c = new ReportContent("Weekly report (test) \\ ) (", "the last 7 days", "all devices", Instant.EPOCH,
 				List.of(new Section("Executive summary", List.of("A long paragraph ".repeat(40)), List.of("one", "two"), List.of(table, line, bar))),
-				List.of("Gas values are raw."));
+				List.of("Gas values are raw."), List.of(new ReportDtos.Kpi("Readings", "1234", "from 2 devices", "neutral"),
+						new ReportDtos.Kpi("Gas incidents", "1", "3 readings at threshold", "alarm")));
 
 		byte[] pdf = PdfRenderer.render(c, ZoneId.of("UTC"));
 		String s = new String(pdf, StandardCharsets.ISO_8859_1);
 
 		assertTrue(s.startsWith("%PDF-1.4"));
 		assertTrue(s.strip().endsWith("%%EOF"));
-		assertTrue(s.contains("/Count 2") || s.contains("/Count 3") || s.contains("/Count 4"), "a long report spans pages");
+		assertTrue(s.matches("(?s).*/Count [3-7] .*"), "a cover plus a long report spanning pages");
+		assertTrue(s.contains("/ExtGState << /GW 7 0 R"), "pages carry the low-opacity watermark state");
+		assertTrue(s.contains("/Info 11 0 R"), "the document info names the report");
 		assertTrue(s.contains("Weekly report \\(test\\) \\\\ \\) \\("), "parentheses and backslashes are escaped");
 		int xref = Integer.parseInt(s.substring(s.lastIndexOf("startxref") + 10).strip().split("\\s")[0]);
 		assertEquals("xref", s.substring(xref, xref + 4), "startxref points at the xref table");
+	}
+
+	@Test
+	void rendersAReportStoredBeforeKpisExisted() {
+		ReportContent old = new ReportContent("Daily report", "today", "all devices", Instant.EPOCH,
+				List.of(new Section("Executive summary", List.of("No readings."), List.of(), List.of())), List.of(), null);
+		String s = new String(PdfRenderer.render(old, ZoneId.of("UTC")), StandardCharsets.ISO_8859_1);
+		assertTrue(s.contains("/Count 2 "), "cover and one page");
+	}
+
+	@Test
+	void wrappingCutsWordsLongerThanTheLine() {
+		for (String line : PdfRenderer.wrap("x".repeat(400), 10, 120, false)) {
+			assertTrue(PdfRenderer.width(line, 10, false) <= 120);
+		}
 	}
 
 	@Test

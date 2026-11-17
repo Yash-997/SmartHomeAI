@@ -30,6 +30,7 @@ import com.smarthome.analytics.Visual.VisualSeries;
 import com.smarthome.assistant.Text;
 import com.smarthome.assistant.tools.Fmt;
 import com.smarthome.device.DeviceDtos.DeviceResponse;
+import com.smarthome.report.ReportDtos.Kpi;
 import com.smarthome.report.ReportDtos.ReportContent;
 import com.smarthome.report.ReportDtos.Section;
 
@@ -215,7 +216,33 @@ public class ReportBuilder {
 				"Gas values are raw MQ-2 sensor readings (0-4095), not ppm. This report is not a safety system; follow the device's own gas warning.",
 				"Where a sensor sent no value, it is reported as missing, never as zero. Minimum and maximum times refer to 15-minute windows.",
 				"Every figure was computed from the stored readings when the report was generated (" + Fmt.time(now, z) + ").");
-		return new ReportContent(title, r.label(), scope(deviceOrNull, names), now, sections, notes);
+		return new ReportContent(title, r.label(), scope(deviceOrNull, names), now, sections, notes,
+				kpis(s, motion, anomalies.size(), openAnomalies, gas.size(), offline, outcomes, commands));
+	}
+
+	/** The headline cards of the PDF. Only stored figures; a metric without values shows a dash, never zero. */
+	static List<Kpi> kpis(Summary s, MotionActivity motion, int anomalies, long openAnomalies, int gasIncidents, long offline, Map<String, Long> outcomes,
+			Map<String, Long> commands) {
+		DeviceStats all = s.overall();
+		MetricStats t = all.of(Metric.TEMPERATURE);
+		MetricStats h = all.of(Metric.HUMIDITY);
+		long reporting = s.devices().stream().filter(d -> d.readings() > 0).count();
+		long runs = outcomes.values().stream().mapToLong(Long::longValue).sum();
+		long sent = commands.values().stream().mapToLong(Long::longValue).sum();
+		List<Kpi> out = new ArrayList<>();
+		out.add(new Kpi("Readings", Long.toString(all.readings()), "from " + reporting + (reporting == 1 ? " device" : " devices"), all.readings() == 0 ? "warn" : "neutral"));
+		out.add(new Kpi("Avg temperature", t.count() == 0 ? "-" : Metric.TEMPERATURE.format(t.avg()),
+				t.count() == 0 ? "no values" : Metric.TEMPERATURE.number(t.min()) + " to " + Metric.TEMPERATURE.format(t.max()),
+				t.count() == 0 ? "neutral" : t.avg() > TEMP_HIGH || t.avg() < TEMP_LOW ? "warn" : "ok"));
+		out.add(new Kpi("Avg humidity", h.count() == 0 ? "-" : Metric.HUMIDITY.format(h.avg()),
+				h.count() == 0 ? "no values" : Metric.HUMIDITY.number(h.min()) + " to " + Metric.HUMIDITY.format(h.max()),
+				h.count() == 0 ? "neutral" : h.avg() > HUMID_HIGH || h.avg() < HUMID_LOW ? "warn" : "ok"));
+		out.add(new Kpi("Motion detected", Long.toString(motion.detected()), "of " + motion.readings() + " motion readings", "neutral"));
+		out.add(new Kpi("Anomalies", Integer.toString(anomalies), openAnomalies + " unresolved", openAnomalies > 0 ? "warn" : "ok"));
+		out.add(new Kpi("Gas incidents", Integer.toString(gasIncidents), all.gasOverThreshold() + " readings at threshold", gasIncidents > 0 ? "alarm" : "ok"));
+		out.add(new Kpi("Went offline", Long.toString(offline), offline == 0 ? "no connection drops" : "connection drops", offline >= 3 ? "warn" : "ok"));
+		out.add(new Kpi("Automation runs", Long.toString(runs), sent + " device commands", "neutral"));
+		return out;
 	}
 
 	/** Fixed rules; each recommendation quotes the value that triggered it. */

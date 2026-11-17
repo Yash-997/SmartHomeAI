@@ -5,6 +5,7 @@ import DeviceList from '../components/DeviceList'
 import HomeHero from '../components/HomeHero'
 import MetricCards from '../components/MetricCards'
 import SecurityOverview from '../components/SecurityOverview'
+import SystemPulse from '../components/SystemPulse'
 import Shell from '../components/Shell'
 import { useLiveDevices } from '../components/useLiveDevices'
 import { useTelemetryHistory } from '../components/useTelemetryHistory'
@@ -19,14 +20,18 @@ export default function Dashboard() {
   // The headline readings come from the device that is online right now (or the first one).
   const primary = devices?.find((d) => liveStatus(d, elapsed).connection === 'ONLINE') ?? devices?.[0] ?? null
   const history = useTelemetryHistory(primary?.id ?? null)
-  const temps = useMemo<TrendPoint[]>(() => history.flatMap((h) => (h.temperatureC === null ? [] : [{ at: h.receivedAt, value: h.temperatureC }])), [history])
-  const hums = useMemo<TrendPoint[]>(() => history.flatMap((h) => (h.humidityPct === null ? [] : [{ at: h.receivedAt, value: h.humidityPct }])), [history])
+  // Readings without a value stay in the series as null, so the chart leaves a gap there instead of bridging it.
+  const temps = useMemo<TrendPoint[]>(() => history.map((h) => ({ at: h.receivedAt, value: h.temperatureC ?? null })), [history])
+  const hums = useMemo<TrendPoint[]>(() => history.map((h) => ({ at: h.receivedAt, value: h.humidityPct ?? null })), [history])
+  const hasTemps = temps.filter((p) => p.value !== null).length >= 3
+  const hasHums = hums.filter((p) => p.value !== null).length >= 3
 
   if (!user) return null
 
   return (
     <Shell wide>
       <HomeHero devices={devices} elapsed={elapsed} />
+      <SystemPulse />
 
       {error && !devices && (
         <p className="rounded-xl border border-red-400/40 bg-red-500/10 p-4 text-sm text-red-300" role="alert">
@@ -65,14 +70,14 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {primary && (temps.length >= 3 || hums.length >= 3) && (
+      {primary && (hasTemps || hasHums) && (
         <section aria-labelledby="trends-heading" className="space-y-3">
           <div className="flex items-baseline justify-between gap-2">
             <h2 id="trends-heading" className="text-base font-semibold">Trends</h2>
             <p className="text-xs text-slate-500">Recent readings from {primary.name}. Hover or use the arrow keys to inspect a point.</p>
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
-            {temps.length >= 3 && (
+            {hasTemps && (
               <div className="card p-5">
                 <div className="mb-4 flex items-baseline justify-between">
                   <p className="text-sm font-medium text-slate-300">Temperature</p>
@@ -81,7 +86,7 @@ export default function Dashboard() {
                 <TrendChart points={temps} label="Temperature" unit="°C" height={150} />
               </div>
             )}
-            {hums.length >= 3 && (
+            {hasHums && (
               <div className="card p-5">
                 <div className="mb-4 flex items-baseline justify-between">
                   <p className="text-sm font-medium text-slate-300">Humidity</p>

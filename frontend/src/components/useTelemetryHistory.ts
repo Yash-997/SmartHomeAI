@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api, type Telemetry } from '../api'
 
 /**
- * The latest stored readings of a device, oldest first, refreshed every 30 s. The result is tagged with the device it
+ * The latest stored readings of a device, sorted oldest first by receive time, refreshed every 30 s. The result is tagged with the device it
  * belongs to, so switching device never shows the previous device's line.
  */
 export function useTelemetryHistory(deviceId: string | null, limit = 60): Telemetry[] {
@@ -14,7 +14,7 @@ export function useTelemetryHistory(deviceId: string | null, limit = 60): Teleme
     const load = () =>
       api
         .telemetryHistory(deviceId, limit)
-        .then((rows) => !cancelled && setLoaded({ id: deviceId, rows: [...rows].reverse() }))
+        .then((rows) => !cancelled && setLoaded({ id: deviceId, rows: [...rows].sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt)) }))
         .catch(() => undefined)       // a trend line is optional: if it cannot load, the page simply shows none
     load()
     const timer = setInterval(load, 30000)

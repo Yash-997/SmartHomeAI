@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ComponentType, type ReactNode, type SVGProps } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import { m } from 'motion/react'
 import { useAuth } from '../auth'
+import Logo from '../ui/Logo'
 import {
   BoltIcon, ChatIcon, CloseIcon, DevicesIcon, HomeIcon, LogoutIcon, MenuIcon, PulseIcon, ReportIcon, ShieldIcon, SparkIcon,
 } from '../ui/icons'
@@ -20,20 +22,9 @@ const ITEMS: Item[] = [
 /** The four sections kept on the phone's bottom bar; the rest live under "More". */
 const PRIMARY = ['/', '/devices', '/security', '/assistant']
 
-function Logo() {
-  return (
-    <div className="flex items-center gap-2.5">
-      <span aria-hidden="true" className="grid h-8 w-8 place-items-center rounded-lg bg-indigo-400 text-slate-950">
-        <HomeIcon width={18} height={18} strokeWidth={2.2} />
-      </span>
-      <span className="text-[15px] font-semibold tracking-tight">AI Smart Home</span>
-    </div>
-  )
-}
-
 const side = ({ isActive }: { isActive: boolean }) =>
-  `group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium ${
-    isActive ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-100'
+  `group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium ${
+    isActive ? 'text-white' : 'text-slate-400 hover:bg-slate-700 hover:text-slate-100'
   }`
 
 const tab = ({ isActive }: { isActive: boolean }) =>
@@ -44,7 +35,7 @@ function UserBlock({ compact = false }: { compact?: boolean }) {
   const initial = (user?.username ?? '?').slice(0, 1).toUpperCase()
   return (
     <div className={`flex items-center gap-3 ${compact ? '' : 'border-t border-slate-800 pt-4'}`}>
-      <span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-slate-700 text-sm font-semibold text-slate-100">{initial}</span>
+      <span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-linear-to-br from-indigo-800 to-slate-700 text-sm font-semibold text-slate-100 ring-1 ring-indigo-400/15">{initial}</span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium" title={user?.username}>{user?.username}</p>
         {user?.email && <p className="truncate text-xs text-slate-500" title={user.email}>{user.email}</p>}
@@ -91,16 +82,27 @@ export default function Shell({ children, wide = false }: { children: ReactNode;
       </a>
 
       {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col gap-6 border-r border-slate-800 bg-slate-950/90 p-5 backdrop-blur lg:flex">
-        <Logo />
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col gap-7 border-r border-slate-800 bg-slate-900/95 p-5 backdrop-blur lg:flex">
+        <div className="px-1 pt-1">
+          <Logo size={36} tagline />
+        </div>
         <nav aria-label="Main" className="flex flex-1 flex-col gap-1">
+          <p aria-hidden="true" className="brand-eyebrow mb-2 px-3 !text-slate-500">Workspace</p>
           {ITEMS.map(({ to, label, icon: I, end }) => (
             <NavLink key={to} to={to} end={end} className={side}>
               {({ isActive }) => (
                 <>
+                  {isActive && (
+                    <m.span
+                      layoutId="nav-active"
+                      aria-hidden="true"
+                      className="absolute inset-0 rounded-lg border border-indigo-400/15 bg-linear-to-r from-indigo-400 to-indigo-500"
+                      transition={{ type: 'spring', stiffness: 420, damping: 36 }}
+                    />
+                  )}
                   <span aria-hidden="true" className={`absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-indigo-400 transition-opacity ${isActive ? 'opacity-100' : 'opacity-0'}`} />
-                  <I className={isActive ? 'text-indigo-400' : ''} />
-                  {label}
+                  <I className={`relative ${isActive ? 'text-white' : ''}`} />
+                  <span className="relative">{label}</span>
                 </>
               )}
             </NavLink>
@@ -110,8 +112,8 @@ export default function Shell({ children, wide = false }: { children: ReactNode;
       </aside>
 
       {/* Phone top bar */}
-      <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-800 bg-slate-950/90 px-4 py-3 backdrop-blur lg:hidden">
-        <Logo />
+      <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-800 bg-slate-900/90 px-4 py-3 backdrop-blur lg:hidden">
+        <Logo size={30} />
         <button type="button" onClick={() => setMore(true)} aria-label="Account and more" className="btn-secondary grid h-9 w-9 place-items-center rounded-lg">
           <MenuIcon />
         </button>
@@ -122,7 +124,7 @@ export default function Shell({ children, wide = false }: { children: ReactNode;
       </main>
 
       {/* Phone bottom bar */}
-      <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-30 flex gap-1 border-t border-slate-800 bg-slate-950/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1.5 backdrop-blur lg:hidden">
+      <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-30 flex gap-1 border-t border-slate-800 bg-slate-900/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1.5 backdrop-blur lg:hidden">
         {ITEMS.filter((i) => PRIMARY.includes(i.to)).map(({ to, label, icon: I, end }) => (
           <NavLink key={to} to={to} end={end} className={tab}>
             <I />
@@ -138,7 +140,7 @@ export default function Shell({ children, wide = false }: { children: ReactNode;
 
       {more && (
         <div className="fixed inset-0 z-40 lg:hidden" role="dialog" aria-modal="true" aria-label="More">
-          <button type="button" aria-label="Close menu" tabIndex={-1} className="absolute inset-0 bg-black/60" onClick={() => setMore(false)} />
+          <button type="button" aria-label="Close menu" tabIndex={-1} className="absolute inset-0 bg-[#292b35]/35" onClick={() => setMore(false)} />
           <div ref={sheetRef} className="absolute inset-x-0 bottom-0 space-y-4 rounded-t-2xl border-t border-slate-700 bg-slate-800 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-lg">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold">More</h2>
@@ -147,7 +149,7 @@ export default function Shell({ children, wide = false }: { children: ReactNode;
             <ul className="grid gap-1">
               {ITEMS.filter((i) => !PRIMARY.includes(i.to)).map(({ to, label, icon: I }) => (
                 <li key={to}>
-                  <NavLink to={to} className={side}><I />{label}</NavLink>
+                  <NavLink to={to} className={(st) => `${side(st)} ${st.isActive ? 'bg-slate-700' : ''}`}><I />{label}</NavLink>
                 </li>
               ))}
             </ul>
@@ -164,8 +166,9 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
-        <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
-        {subtitle && <p className="mt-1.5 max-w-2xl text-sm text-slate-400">{subtitle}</p>}
+        <p aria-hidden="true" className="brand-eyebrow mb-1.5">VÉYRA</p>
+        <h1 className="font-display text-3xl font-semibold leading-tight sm:text-4xl">{title}</h1>
+        {subtitle && <p className="mt-2 max-w-2xl text-sm text-slate-400">{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>

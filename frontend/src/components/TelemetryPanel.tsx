@@ -13,9 +13,10 @@ const BADGE: Record<Connection, { label: string; dot: string; tone: string; hint
 export function ConnectionBadge({ connection }: { connection: Connection }) {
   const b = BADGE[connection]
   return (
-    <span className={`flex shrink-0 items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ${b.tone}`} title={b.hint}>
-      <span aria-hidden="true" className={`h-2 w-2 rounded-full ${b.dot}`} />
-      {b.label}
+    <span className={`flex shrink-0 items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold transition-colors duration-500 ${b.tone}`} title={b.hint}>
+      {/* Keyed by state: when the connection changes the dot is re-created and its ring breathes a few times. */}
+      <span key={connection} aria-hidden="true" className={`status-dot-live h-2 w-2 rounded-full ${b.dot} ${b.dot.replace('bg-', 'text-')}`} />
+      <span key={`l-${connection}`} className="value-tick">{b.label}</span>
     </span>
   )
 }
@@ -35,9 +36,10 @@ function Tile({ label, value, note, missing, dim, num }: { label: string; value:
 /** Temperature and humidity trend lines from the stored history (nothing is drawn until there are at least three readings). */
 function Trend({ deviceId }: { deviceId: string }) {
   const history = useTelemetryHistory(deviceId)
-  const temps = history.map((h) => h.temperatureC).filter((v): v is number => v !== null)
-  const hums = history.map((h) => h.humidityPct).filter((v): v is number => v !== null)
-  if (temps.length < 3 && hums.length < 3) return null
+  const temps = history.map((h) => h.temperatureC ?? null)
+  const hums = history.map((h) => h.humidityPct ?? null)
+  const real = (vs: (number | null)[]) => vs.filter((v) => v !== null).length
+  if (real(temps) < 3 && real(hums) < 3) return null
   return (
     <div className="mt-3 grid gap-4 sm:grid-cols-2">
       <Sparkline values={temps} label="Temperature" unit="°C" />

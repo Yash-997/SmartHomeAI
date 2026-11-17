@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { AnimatePresence, m } from 'motion/react'
 import { api, ApiError, type Command, type CommandStatus, type Device, type OutputSpec } from '../api'
 import { formatAge, liveStatus } from '../telemetry'
 import { ChevronDownIcon } from '../ui/icons'
@@ -101,11 +102,18 @@ export default function OutputControls({
                       disabled={!online || busy !== null}
                       onClick={() => send(o, v)}
                       aria-pressed={active}
-                      className={`min-w-14 rounded-lg px-3.5 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                        active ? 'bg-indigo-400 text-slate-950 shadow-sm hover:bg-indigo-300' : 'text-slate-300 hover:bg-slate-700'
+                      className={`relative min-w-14 rounded-lg px-3.5 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                        active ? 'text-white' : 'text-slate-300 hover:bg-slate-700'
                       }`}
                     >
-                      {busy === key ? '...' : (VALUE_LABEL[v] ?? v)}
+                      {active && (
+                        <m.span layoutId={`out-${device.id}-${o.action}`} aria-hidden="true" className="absolute inset-0 rounded-lg bg-indigo-400 shadow-sm"
+                          transition={{ type: 'spring', stiffness: 400, damping: 32 }} />
+                      )}
+                      <span className="relative inline-flex items-center justify-center gap-1.5">
+                        {busy === key && <span className="spinner h-3 w-3" aria-hidden="true" />}
+                        {busy === key ? 'Sending' : (VALUE_LABEL[v] ?? v)}
+                      </span>
                     </button>
                   )
                 })}
@@ -133,7 +141,14 @@ export default function OutputControls({
               <li key={c.id} className="flex flex-wrap items-center gap-2 text-xs">
                 <span className="text-slate-300">{describe(c, device.outputs)}</span>
                 {c.origin && <span className="rounded bg-slate-700 px-1.5 py-0.5 text-slate-300">{c.origin.startsWith('automation:') ? `Automation: ${c.origin.slice(11)}` : c.origin}</span>}
-                <span className={`rounded px-2 py-0.5 ${STATUS[c.status].tone}`}>{STATUS[c.status].label}</span>
+                <AnimatePresence mode="wait" initial={false}>
+                  <m.span key={c.status} className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 ${STATUS[c.status].tone}`}
+                    initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
+                    {c.status === 'ACKNOWLEDGED' && <span aria-hidden="true">✓</span>}
+                    {(c.status === 'SENT' || c.status === 'PENDING') && <span aria-hidden="true" className="spinner h-2.5 w-2.5" />}
+                    {STATUS[c.status].label}
+                  </m.span>
+                </AnimatePresence>
                 {c.detail && c.status !== 'ACKNOWLEDGED' && <span className="text-slate-500">{c.detail}</span>}
                 <span className="text-slate-600">{new Date(c.createdAt).toLocaleTimeString()}</span>
               </li>

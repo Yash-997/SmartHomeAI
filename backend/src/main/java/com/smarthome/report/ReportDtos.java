@@ -27,8 +27,19 @@ public final class ReportDtos {
 	public record Section(String heading, List<String> paragraphs, List<String> bullets, List<Visual> visuals) {
 	}
 
-	/** The stored snapshot. */
-	public record ReportContent(String title, String periodLabel, String scope, Instant generatedAt, List<Section> sections, List<String> notes) {
+	/**
+	 * A headline figure shown as a card at the top of the PDF. {@code tone} is ok, warn, alarm or neutral. Every value is
+	 * computed from stored data by {@link ReportBuilder}.
+	 */
+	public record Kpi(String label, String value, String detail, String tone) {
+	}
+
+	/**
+	 * The stored snapshot. {@code kpis} was added later: reports stored before it was introduced read back with null
+	 * and are rendered without the cards.
+	 */
+	public record ReportContent(String title, String periodLabel, String scope, Instant generatedAt, List<Section> sections, List<String> notes,
+			List<Kpi> kpis) {
 	}
 
 	public record ReportSummary(UUID id, String kind, String title, Instant periodFrom, Instant periodTo, String timeZone, UUID deviceId,

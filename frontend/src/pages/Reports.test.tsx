@@ -62,6 +62,28 @@ describe('Reports page', () => {
     expect(apiMock.report).toHaveBeenCalledWith('r1')
   })
 
+  it('opens an older report from a long history in its own scroll area, with the actions beside the title', async () => {
+    const { content: _c, ...summary } = DETAIL
+    const history = Array.from({ length: 25 }, (_, i) => ({ ...summary, id: `r${i}`, title: `Daily report ${i}` }))
+    apiMock.reports.mockResolvedValue(history)
+    apiMock.report.mockImplementation((id: string) => Promise.resolve({ ...DETAIL, id, title: `Daily report ${id.slice(1)}`,
+      content: { ...DETAIL.content, title: `Daily report ${id.slice(1)}` } }))
+    render(<MemoryRouter><Reports /></MemoryRouter>)
+
+    const list = await screen.findByTestId('report-history')
+    expect(list).toHaveClass('overflow-y-auto')
+    expect(list.children).toHaveLength(25)
+    fireEvent.click(screen.getByRole('button', { name: /Daily report 24/ }))
+
+    await screen.findByRole('heading', { name: 'Daily report 24', level: 2 })
+    expect(apiMock.report).toHaveBeenCalledWith('r24')
+    // Every section is still rendered inside the scrollable body; the header with Download/Delete sits outside it.
+    const body = screen.getByTestId('report-body')
+    expect(body).toHaveClass('lg:overflow-y-auto')
+    expect(body.querySelectorAll('section')).toHaveLength(DETAIL.content.sections.length)
+    expect(body).not.toContainElement(screen.getByRole('button', { name: 'Download PDF' }))
+  })
+
   it('shows a server error instead of failing silently', async () => {
     const { ApiError } = await import('../api')
     apiMock.createReport.mockRejectedValue(new ApiError(429, 'Too many reports in a minute.'))

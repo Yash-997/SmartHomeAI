@@ -20,14 +20,15 @@ function Metric({ icon, label, value, status, tone, stale, extra }: {
   extra?: string
 }) {
   return (
-    <div className={`card p-4 transition duration-200 hover:-translate-y-0.5 sm:p-6 ${stale ? 'opacity-60' : ''} ${tone === 'alarm' ? 'border-red-400/50' : ''}`}>
-      <div className="flex items-center justify-between">
+    <div className={`card lift relative overflow-hidden p-4 sm:p-6 ${stale ? 'opacity-60' : ''} ${tone === 'alarm' ? '!border-red-400/50' : ''}`}>
+      <div aria-hidden="true" className={`pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full blur-2xl ${tone === 'alarm' ? 'bg-red-500/15' : tone === 'warn' ? 'bg-amber-400/10' : 'bg-indigo-400/10'}`} />
+      <div className="relative flex items-center justify-between">
         <span className="text-sm text-slate-400">{label}</span>
         <span aria-hidden="true" className={`grid h-9 w-9 place-items-center rounded-xl ${tone === 'alarm' ? 'bg-red-500/15 text-red-300' : tone === 'warn' ? 'bg-amber-400/15 text-amber-300' : 'bg-indigo-400/12 text-indigo-300'}`}>{icon}</span>
       </div>
-      <div className="mt-4 text-4xl font-semibold leading-none tracking-tight">{value}</div>
-      <div className={`mt-3 flex items-center gap-2 text-xs ${TEXT[tone]}`}>
-        <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${DOT[tone]}`} />
+      <div className="relative mt-4 text-4xl font-semibold leading-none tracking-tight">{value}</div>
+      <div className={`relative mt-3 flex items-center gap-2 text-xs ${TEXT[tone]}`}>
+        <span key={status} aria-hidden="true" className={`status-dot !h-1.5 !w-1.5 ${DOT[tone].replace('bg-', 'text-')} ${tone === 'alarm' || tone === 'warn' ? 'status-dot-live' : ''}`} />
         <span>{status}</span>
         {extra && <span className="text-slate-500">· {extra}</span>}
       </div>

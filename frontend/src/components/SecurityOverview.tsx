@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { m } from 'motion/react'
 import { api, ApiError, type SecurityMode } from '../api'
 import { eventTitle, relativeTime } from '../securityEvents'
 import { CheckIcon, ChevronRightIcon } from '../ui/icons'
@@ -50,10 +51,14 @@ export default function SecurityOverview() {
       {s && (
         <>
           <div role="group" aria-label="Security mode" className="mt-4 grid grid-cols-3 gap-1 rounded-xl border border-slate-700 bg-slate-900 p-1">
-            {MODES.map((m) => (
-              <button key={m.id} type="button" disabled={busy} aria-pressed={s.mode === m.id} onClick={() => choose(m.id)}
-                className={`rounded-lg py-2 text-sm font-medium disabled:opacity-60 ${s.mode === m.id ? 'bg-indigo-400 text-slate-950' : 'text-slate-300 hover:bg-slate-700'}`}>
-                {m.label}
+            {MODES.map((mode) => (
+              <button key={mode.id} type="button" disabled={busy} aria-pressed={s.mode === mode.id} onClick={() => choose(mode.id)}
+                className={`relative rounded-lg py-2 text-sm font-medium transition-colors duration-200 disabled:opacity-60 ${s.mode === mode.id ? 'text-white' : 'text-slate-300 hover:bg-slate-700'}`}>
+                {s.mode === mode.id && (
+                  <m.span layoutId="security-mode-pill" aria-hidden="true" className="absolute inset-0 rounded-lg bg-indigo-400 shadow-[0_6px_18px_-8px_rgba(113,59,80,0.6)]"
+                    transition={{ type: 'spring', stiffness: 380, damping: 32 }} />
+                )}
+                <span className={`relative ${s.mode === mode.id ? 'text-white' : ''}`}>{mode.label}</span>
               </button>
             ))}
           </div>

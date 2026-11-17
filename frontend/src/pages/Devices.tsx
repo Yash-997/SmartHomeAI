@@ -86,7 +86,7 @@ function DeviceCard({ device, elapsedSeconds, onChanged }: { device: Device; ela
           </p>
           <div className="mt-3 flex gap-2">
             <button disabled={busy} onClick={() => run(() => api.disownDevice(device.id), () => setConfirming(false))}
-              className="rounded-lg bg-red-500 px-3 py-1.5 font-medium text-slate-950 hover:bg-red-400 disabled:opacity-60">Yes, disown</button>
+              className="rounded-lg bg-red-600 px-3 py-1.5 font-medium text-white hover:bg-red-300 disabled:opacity-60">Yes, disown</button>
             <button onClick={() => setConfirming(false)} className="btn-secondary rounded-lg px-3 py-1.5">Keep</button>
           </div>
         </div>

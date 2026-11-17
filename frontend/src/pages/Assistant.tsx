@@ -12,6 +12,7 @@ import {
 import ChatMessageView from '../components/ChatMessageView'
 import CommandCard from '../components/CommandCard'
 import { ChatIcon, ChevronDownIcon, PlusIcon } from '../ui/icons'
+import { LogoMark } from '../ui/Logo'
 import Shell from '../components/Shell'
 import KnowledgePanel from '../components/KnowledgePanel'
 import { FINAL, outcomeText, type CommandItem } from '../voice/commands'
@@ -410,13 +411,14 @@ export default function Assistant() {
               {shownItems.filter((i) => i.afterIndex >= count).map(card)}
               {pending !== null && (
                 <>
-                  <div className="flex justify-end"><p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-slate-700 px-4 py-2.5 text-sm">{pending}</p></div>
-                  <p className="flex items-center gap-2 text-sm text-slate-400" role="status">
-                    <span aria-hidden="true" className="flex gap-1">
-                      {[0, 1, 2].map((i) => <span key={i} className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-400" style={{ animationDelay: `${i * 120}ms` }} />)}
-                    </span>
-                    {progress ? `${progress}...` : 'Searching your records and thinking...'}
-                  </p>
+                  <div className="flex justify-end"><p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-linear-to-br from-indigo-400 to-indigo-500 px-4 py-2.5 text-[15px] font-medium text-white">{pending}</p></div>
+                  <div className="flex items-start gap-2.5">
+                    <LogoMark size={30} className="mt-0.5 shrink-0" />
+                    <p className="flex items-center gap-3 rounded-2xl rounded-tl-md border border-slate-700 bg-slate-700/60 px-4 py-3 text-sm text-slate-300" role="status">
+                      <span aria-hidden="true" className="flex gap-1"><span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" /></span>
+                      {progress ? `${progress}...` : 'Searching your records and thinking...'}
+                    </p>
+                  </div>
                 </>
               )}
               <div ref={endRef} />
@@ -437,11 +439,12 @@ export default function Assistant() {
                 <textarea id="assistant-input" aria-label="Your question" value={input} onChange={(e) => setInput(e.target.value)} maxLength={max} rows={2}
                   placeholder="Ask about your devices..."
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(input) } }}
-                  className="w-full resize-none rounded-2xl border border-slate-600 bg-slate-900 px-4 py-3 text-[15px] text-slate-100 placeholder:text-slate-500" />
+                  className="field-input w-full resize-none rounded-2xl px-4 py-3 text-[15px] text-slate-100 placeholder:text-slate-500" />
                 <span className="mt-0.5 block text-right">{input.length}/{max}</span>
               </label>
               <button type="submit" disabled={busy || input.trim() === ''}
-                className="btn-primary mb-5 rounded-xl px-6 py-3 text-sm disabled:opacity-60">
+                className="btn-primary mb-5 flex items-center gap-2 rounded-xl px-6 py-3 text-sm disabled:opacity-60">
+                {busy && <span className="spinner" aria-hidden="true" />}
                 {busy ? 'Asking...' : 'Ask'}
               </button>
             </form>

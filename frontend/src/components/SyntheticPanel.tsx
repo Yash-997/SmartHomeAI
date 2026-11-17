@@ -112,13 +112,13 @@ export default function SyntheticPanel({ deviceId }: { deviceId: string }) {
             <div className="mt-3 flex flex-wrap gap-2">
               {!ds && (
                 <button type="button" onClick={() => run('generate')} disabled={busy !== ''}
-                  className="rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium hover:bg-violet-500 disabled:opacity-60">
+                  className="rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-60">
                   {busy === 'generate' ? 'Generating...' : 'Generate 30-day synthetic dataset'}
                 </button>
               )}
               {ds && (
                 <button type="button" onClick={() => run('train')} disabled={busy !== ''}
-                  className="rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium hover:bg-violet-500 disabled:opacity-60">
+                  className="rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-60">
                   {busy === 'train' ? 'Training...' : s.model ? 'Retrain on synthetic data' : 'Train on synthetic data'}
                 </button>
               )}

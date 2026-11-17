@@ -61,7 +61,7 @@ function RuleCard({ rule, devices, onEdit, onChanged }: { rule: Rule; devices: D
         <button type="button" role="switch" aria-checked={rule.enabled} aria-label={`${rule.name} enabled`} disabled={busy}
           onClick={() => run(() => api.setRuleEnabled(rule.id, !rule.enabled))}
           className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-60 ${rule.enabled ? 'bg-indigo-400' : 'bg-slate-600'}`}>
-          <span aria-hidden="true" className={`absolute top-0.5 h-5 w-5 rounded-full shadow transition-all ${rule.enabled ? 'left-[22px] bg-slate-950' : 'left-0.5 bg-slate-300'}`} />
+          <span aria-hidden="true" className={`absolute top-0.5 h-5 w-5 rounded-full shadow transition-all ${rule.enabled ? 'left-[22px] bg-slate-950' : 'left-0.5 bg-white'}`} />
         </button>
       </div>
 
@@ -99,7 +99,7 @@ function RuleCard({ rule, devices, onEdit, onChanged }: { rule: Rule; devices: D
         <div role="alertdialog" aria-label={`Delete ${rule.name}`} className="mt-4 rounded-xl border border-red-400/30 bg-red-950/40 p-3 text-sm">
           <p>Delete <strong>{rule.name}</strong> and its history? This cannot be undone.</p>
           <div className="mt-3 flex gap-2">
-            <button type="button" disabled={busy} onClick={() => run(() => api.deleteRule(rule.id))} className="rounded-lg bg-red-500 px-3 py-1.5 font-medium text-slate-950 hover:bg-red-400 disabled:opacity-60">Yes, delete</button>
+            <button type="button" disabled={busy} onClick={() => run(() => api.deleteRule(rule.id))} className="rounded-lg bg-red-600 px-3 py-1.5 font-medium text-white hover:bg-red-300 disabled:opacity-60">Yes, delete</button>
             <button type="button" onClick={() => setConfirming(false)} className="btn-secondary rounded-lg px-3 py-1.5">Keep</button>
           </div>
         </div>

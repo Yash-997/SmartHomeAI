@@ -3,6 +3,7 @@ import { AnimatePresence, LazyMotion, MotionConfig, domAnimation, m } from 'moti
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth'
 import Assistant from './pages/Assistant'
+import AuthLayout from './pages/AuthLayout'
 import Dashboard from './pages/Dashboard'
 import Automation from './pages/Automation'
 import Devices from './pages/Devices'
@@ -14,11 +15,17 @@ import Reports from './pages/Reports'
 import Security from './pages/Security'
 import Backdrop from './ui/Backdrop'
 import ToastHost from './ui/ToastHost'
+import { LogoMark } from './ui/Logo'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth()
   if (loading) {
-    return <main className="flex min-h-screen items-center justify-center text-slate-400" role="status">Loading...</main>
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center gap-4 text-slate-400" role="status">
+        <LogoMark size={56} intro />
+        <span className="text-sm">Loading VÉYRA...</span>
+      </main>
+    )
   }
   return user ? children : <Navigate to="/login" replace />
 }
@@ -26,17 +33,21 @@ function RequireAuth({ children }: { children: ReactNode }) {
 /** Pages cross-fade: the old page leaves quickly, then the new one arrives with a small upward settle. */
 function AnimatedRoutes() {
   const location = useLocation()
+  // Sign-in and registration share one frame that animates its own form swap, so they share one key here.
+  const key = location.pathname === '/login' || location.pathname === '/register' ? 'auth' : location.pathname
   return (
     <AnimatePresence mode="wait" initial={false}>
       <m.div
-        key={location.pathname}
+        key={key}
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0, transition: { duration: 0.22, ease: [0.2, 0.7, 0.2, 1] } }}
         exit={{ opacity: 0, transition: { duration: 0.12 } }}
       >
         <Routes location={location}>
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
+          <Route element={<AuthLayout />}>
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+          </Route>
           <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
           <Route path="/devices" element={<RequireAuth><Devices /></RequireAuth>} />
           <Route path="/automation" element={<RequireAuth><Automation /></RequireAuth>} />

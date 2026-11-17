@@ -29,8 +29,8 @@ export default function PatternHeatmap({ pattern }: { pattern: OccupancyPattern 
                   return (
                     <td key={h}
                       title={c ? `${DAYS[d]} ${hourLabel(h)} · model ${pct(p)} · seen in ${c.observedRate === null ? 'no' : pct(c.observedRate)} of ${c.slots} past slots` : ''}
-                      className={`h-4 w-5 rounded-sm ${empty ? 'bg-[repeating-linear-gradient(45deg,#334155,#334155_2px,#1e293b_2px,#1e293b_4px)]' : ''}`}
-                      style={empty ? undefined : { backgroundColor: `rgba(129, 140, 248, ${0.08 + 0.92 * p})` }} />
+                      className={`heat-cell h-4 w-5 rounded-sm ${empty ? 'bg-[repeating-linear-gradient(45deg,#e6d8de,#e6d8de_2px,#fbf9f8_2px,#fbf9f8_4px)]' : ''}`}
+                      style={{ animationDelay: `${(d * 24 + h) * 3}ms`, ...(empty ? {} : { backgroundColor: `rgba(113, 59, 80, ${0.08 + 0.92 * p})` }) }} />
                   )
                 })}
               </tr>
