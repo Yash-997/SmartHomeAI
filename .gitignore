@@ -43,3 +43,7 @@ documentation/
 CLAUDE.md
 **/CLAUDE.md
 CLAUDE.local.md
+
+# LaTeX and PDFs
+*.tex
+*.pdf
