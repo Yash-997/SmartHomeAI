@@ -533,6 +533,23 @@ static void connectMqtt() {
     }
   }
   Serial.printf("[net] MQTT connect failed (rc=%d); retrying in %lu ms\n", rc, (unsigned long)wait);
+  if (rc == MQTT_CONNECT_FAILED) {
+    // rc=-2: the TCP connection itself failed, before any MQTT login. Probe once so the log says why (no credentials sent).
+    Serial.printf("[net] MQTT rc=-2 means TCP to %s:%d failed. This device: IP %s, gateway %s, signal %d dBm.\n", MQTT_HOST,
+                  MQTT_BROKER_PORT, WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(), (int)WiFi.RSSI());
+    WiFiClient probe;
+    const uint32_t t0 = millis();
+    const bool reachable = probe.connect(MQTT_HOST, MQTT_BROKER_PORT, 3000);
+    const uint32_t took = millis() - t0;
+    probe.stop();
+    if (reachable) {
+      Serial.println("[net] TCP probe succeeded just now: the broker port is reachable; the failure was transient.");
+    } else if (took >= 2900) {
+      Serial.println("[net] TCP probe timed out: packets are dropped. Check the PC's firewall (inbound TCP 1883 on the Private profile), router client isolation, or a wrong MQTT_HOST.");
+    } else {
+      Serial.println("[net] TCP probe was refused/reset: the host is up but nothing listens on that port. Check the Mosquitto container and its published port.");
+    }
+  }
   mqttWaitUntil = millis() + wait;
 }
 

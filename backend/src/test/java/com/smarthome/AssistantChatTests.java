@@ -124,7 +124,7 @@ class AssistantChatTests extends AssistantTestBase {
 			}
 		}
 		assertNotNull(cited, "the source the answer points at is marked cited");
-		assertEquals("DEVICE_STATUS", cited.get("type").asString());
+		assertEquals("LIVE_DATA", cited.get("type").asString(), "a 'right now' question is answered from a live database query");
 		assertTrue(cited.get("snippet").asString().contains("23.4"));
 		assertEquals(p.uuid().toString(), cited.get("deviceId").asString());
 
@@ -238,11 +238,27 @@ class AssistantChatTests extends AssistantTestBase {
 		deviceWithReadings(token, "Vole Meadow", 23.4, 51.2, 1510);
 		embedder.setDown(true);
 
-		JsonNode r = ask(token, "What is the temperature at Vole Meadow?");
+		// A how-to question needs the (unavailable) text search and has no database query to fall back on.
+		JsonNode r = ask(token, "How do I pair a new device?");
 
 		assertEquals("RETRIEVAL_UNAVAILABLE", statusOf(r));
 		assertTrue(answerText(r).contains("could not be reached"));
 		assertTrue(llm.calls().isEmpty());
+	}
+
+	@Test
+	void ifTheEmbeddingServiceIsDownAReadingQuestionIsStillAnsweredFromTheDatabase() throws Exception {
+		String token = newUserToken();
+		deviceWithReadings(token, "Vole Meadow", 23.4, 51.2, 1510);
+		embedder.setDown(true);
+		llm.replyWith(c -> "Vole Meadow is at 23.4 °C [" + refContaining(c, "temperature 23.4") + "].");
+
+		JsonNode r = ask(token, "What is the temperature at Vole Meadow?");
+
+		assertEquals("ANSWERED", statusOf(r));
+		JsonNode warnings = r.get("assistantMessage").get("warnings");
+		assertTrue(warnings.toString().contains("could not be searched"), warnings.toString());
+		assertEquals("LIVE_DATA", r.get("assistantMessage").get("sources").get(0).get("type").asString());
 	}
 
 	@Test

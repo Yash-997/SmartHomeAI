@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ComponentType, type ReactNode, type S
 import { NavLink, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth'
 import {
-  BoltIcon, ChatIcon, CloseIcon, DevicesIcon, HomeIcon, LogoutIcon, MenuIcon, PulseIcon, ShieldIcon, SparkIcon,
+  BoltIcon, ChatIcon, CloseIcon, DevicesIcon, HomeIcon, LogoutIcon, MenuIcon, PulseIcon, ReportIcon, ShieldIcon, SparkIcon,
 } from '../ui/icons'
 
 type Item = { to: string; label: string; icon: ComponentType<SVGProps<SVGSVGElement>>; end?: boolean }
@@ -14,6 +14,7 @@ const ITEMS: Item[] = [
   { to: '/security', label: 'Security', icon: ShieldIcon },
   { to: '/insights', label: 'ML Insights', icon: SparkIcon },
   { to: '/assistant', label: 'Assistant', icon: ChatIcon },
+  { to: '/reports', label: 'Reports', icon: ReportIcon },
   { to: '/diagnostics', label: 'System Diagnostics', icon: PulseIcon },
 ]
 /** The four sections kept on the phone's bottom bar; the rest live under "More". */

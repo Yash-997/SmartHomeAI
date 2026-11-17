@@ -13,19 +13,18 @@ const STATUS: Record<CommandStatus, { label: string; tone: string }> = {
 
 interface Props {
   item: CommandItem
-  voiceMode: boolean
   onDevice: (deviceId: string) => void
   onConfirm: () => void
   onCancel: () => void
 }
 
-export default function CommandCard({ item, voiceMode, onDevice, onConfirm, onCancel }: Props) {
+export default function CommandCard({ item, onDevice, onConfirm, onCancel }: Props) {
   const title = describeCommand(item.action, item.value)
   const device = item.devices.find((d) => d.id === item.deviceId) ?? null
   return (
     <div className="flex justify-start">
       <div className="w-full max-w-[92%] rounded-2xl rounded-bl-sm border border-indigo-500/40 bg-slate-800 px-4 py-3 text-sm" aria-label="Device command">
-        <p className="text-xs text-slate-400">{item.spoken ? 'You said' : 'You asked'}: “{item.said}”</p>
+        <p className="text-xs text-slate-400">You asked: “{item.said}”</p>
         <p className="mt-1 font-medium text-indigo-200">{title}</p>
 
         {item.phase === 'loading' && <p className="mt-2 text-slate-400">Looking up your devices...</p>}
@@ -46,7 +45,7 @@ export default function CommandCard({ item, voiceMode, onDevice, onConfirm, onCa
               <p className="mt-1 text-slate-300">Device: {device.name}{device.connection !== 'ONLINE' ? ' (looks offline)' : ''}</p>
             )}
             <p className="mt-2 text-xs text-slate-400">
-              Nothing has been sent. {voiceMode ? 'Say “yes” or “no” (tap the microphone first), or use the buttons.' : 'Confirm to send it.'}
+              Nothing has been sent. Confirm to send it.
             </p>
             <div className="mt-2 flex gap-2">
               <button type="button" onClick={onConfirm} disabled={!item.deviceId}

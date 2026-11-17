@@ -41,6 +41,11 @@ public class LocalHashEmbedding implements EmbeddingClient {
 			Map.entry("disconnected", "connection"), Map.entry("status", "connection"),
 			Map.entry("light", "led"), Map.entry("lamp", "led"), Map.entry("prediction", "predict"), Map.entry("forecast", "predict")));
 
+	/** The related word indexed alongside a stemmed token ("temp" -> "temperature"), or null. Used by keyword search too. */
+	static String synonym(String stemmed) {
+		return SYNONYMS.get(stemmed);
+	}
+
 	private static Map<String, String> stemmedKeys(Map<String, String> raw) {
 		Map<String, String> out = new java.util.HashMap<>();
 		raw.forEach((k, v) -> out.put(stem(k), v));

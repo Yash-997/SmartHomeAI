@@ -36,8 +36,36 @@ public final class GroundingCheck {
 	private GroundingCheck() {
 	}
 
+	/**
+	 * Citation styles some models use instead of [S2]: 【S2】, ［S2］, [ S2 ], (S2), lists such as [S1, S3] or (S1 and S2),
+	 * and gpt-oss's line markers 【S2†L4-L9】. Each becomes plain [S2] markers.
+	 */
+	private static final String ONE_REF = "S\\d{1,4}(?:†[^\\]】］),;\\n]{0,20})?";
+	/** Whitespace, including the zero-width characters some models put inside brackets ("[​S1​]"). */
+	private static final String GAP = "[\\s\\u200B-\\u200D\\u2060\\uFEFF]*";
+	private static final Pattern ODD_CITATION = Pattern.compile("[\\[【［(]" + GAP + "(" + ONE_REF + "(?:" + GAP + "(?:[,;&/]|and)" + GAP + ONE_REF + ")*)" + GAP + "[\\]】］)]");
+	private static final Pattern REF = Pattern.compile("(?<![\\p{L}†])S(\\d{1,4})");
+	/** "1,234" -> "1234", so a thousands separator is not read as two numbers. */
+	private static final Pattern THOUSANDS = Pattern.compile("(?<=\\d),(?=\\d{3}(?!\\d))");
+
+	static String normaliseCitations(String answer) {
+		Matcher m = ODD_CITATION.matcher(answer);
+		StringBuilder sb = new StringBuilder();
+		while (m.find()) {
+			StringBuilder refs = new StringBuilder();
+			Matcher r = REF.matcher(m.group(1));
+			while (r.find()) {
+				refs.append("[S").append(r.group(1)).append(']');
+			}
+			m.appendReplacement(sb, Matcher.quoteReplacement(refs.toString()));
+		}
+		m.appendTail(sb);
+		return sb.toString();
+	}
+
 	public static Result check(String answer, int sourceCount, String sourceText, String question) {
-		// 1. citations
+		// 1. citations (normalised first, so a model's bracket style does not make a cited answer look uncited)
+		answer = normaliseCitations(answer);
 		Set<Integer> cited = new LinkedHashSet<>();
 		Matcher cm = CITATION.matcher(answer);
 		StringBuilder cleaned = new StringBuilder();
@@ -54,8 +82,8 @@ public final class GroundingCheck {
 		String text = cleaned.toString().replaceAll(" {2,}", " ").strip();
 
 		// 2. numbers
-		List<BigDecimal> known = numbers(sourceText + "\n" + question);
-		String withoutCitations = CITATION.matcher(text).replaceAll(" ");
+		List<BigDecimal> known = numbers(THOUSANDS.matcher(sourceText + "\n" + question).replaceAll(""));
+		String withoutCitations = THOUSANDS.matcher(CITATION.matcher(text).replaceAll(" ")).replaceAll("");
 		List<String> unverified = new ArrayList<>();
 		boolean anyNumber = false;
 		Matcher nm = NUMBER.matcher(withoutCitations);

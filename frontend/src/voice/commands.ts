@@ -11,7 +11,6 @@ export interface CommandItem {
   /** Shown before the message at this index of the conversation. */
   afterIndex: number
   said: string
-  spoken: boolean
   action: string
   value: string
   phase: CommandPhase
@@ -23,7 +22,7 @@ export interface CommandItem {
 
 export const FINAL: CommandStatus[] = ['ACKNOWLEDGED', 'FAILED', 'EXPIRED', 'UNKNOWN']
 
-/** One sentence about the outcome, suitable for reading aloud. Success is only ever claimed after an acknowledgement. */
+/** One sentence about the outcome. Success is only ever claimed after an acknowledgement. */
 export function outcomeText(item: CommandItem, c: Command): string {
   const name = item.devices.find((d) => d.id === item.deviceId)?.name ?? 'The device'
   const what = describeCommand(c.action, c.value).replace(/^Turn the |^Set the /, 'the ')

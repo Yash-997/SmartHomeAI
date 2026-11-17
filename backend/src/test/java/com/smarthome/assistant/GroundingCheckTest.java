@@ -80,4 +80,37 @@ class GroundingCheckTest {
 		Result r = GroundingCheck.check("Device esp32-ab12 reported gas raw 1510 [S1].", 1, SOURCE, "");
 		assertTrue(r.grounded(), r.warnings().toString());
 	}
+
+	@Test
+	void fullWidthCitationsFromSomeModelsCount() {
+		// Seen live with Groq's gpt-oss: citations written as 【S1】.
+		Result r = GroundingCheck.check("It is 23.4 C 【S1】 and 51.2 % ［ S1 ］.", 1, SOURCE, "how warm is it");
+		assertTrue(r.grounded(), r.warnings().toString());
+		assertTrue(r.text().contains("[S1]"), r.text());
+	}
+
+	@Test
+	void citationListsAndLineMarkersAreSplitIntoPlainCitations() {
+		assertEquals("A [S1][S2] B [S2][S1] C [S1].", GroundingCheck.normaliseCitations("A [S1, S2] B (S2 and S1) C 【S1†L4-L9】."));
+		Result r = GroundingCheck.check("It is 23.4 C [S1; S2].", 2, SOURCE, "");
+		assertEquals(List.of(1, 2), r.cited());
+		assertTrue(r.grounded(), r.warnings().toString());
+		// ordinary parentheses are left alone
+		assertEquals("(see the chart)", GroundingCheck.normaliseCitations("(see the chart)"));
+	}
+
+	@Test
+	void zeroWidthCharactersInsideACitationStillCount() {
+		// seen live from gpt-oss: "[​S1​]"
+		Result r = GroundingCheck.check("There was 1 incident [​S1​].", 1, SOURCE, "");
+		assertEquals(List.of(1), r.cited());
+		assertTrue(r.text().contains("[S1]"), r.text());
+	}
+
+	@Test
+	void thousandsSeparatorsAreReadAsOneNumber() {
+		Result r = GroundingCheck.check("There were 1,234 readings [S1].", 1, "Readings: 1234.", "");
+		assertTrue(r.grounded(), r.warnings().toString());
+		assertEquals(List.of("5678"), GroundingCheck.check("There were 5,678 readings [S1].", 1, "Readings: 1234.", "").unverifiedNumbers());
+	}
 }

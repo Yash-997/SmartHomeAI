@@ -34,15 +34,49 @@ public class ScriptedLlm implements LlmClient {
 	}
 
 	private final List<Call> calls = Collections.synchronizedList(new ArrayList<>());
+	private final List<List<ToolSpec>> toolLists = Collections.synchronizedList(new ArrayList<>());
 	private volatile boolean configured = true;
 	private volatile LlmUnavailableException failure;
 	private volatile Function<Call, String> reply = c -> "I do not know.";
+	/** When set, the fake "supports tools" and this decides each turn (it may ask for tool calls). */
+	private volatile Function<Call, Turn> turns;
 
 	public void reset() {
 		calls.clear();
+		toolLists.clear();
 		configured = true;
 		failure = null;
 		reply = c -> "I do not know.";
+		turns = null;
+	}
+
+	/** Script a tool-using model: the function sees every call so far (tool results are in the messages). */
+	public void turnsWith(Function<Call, Turn> f) {
+		turns = f;
+	}
+
+	/** The tool lists offered on each tool-enabled call. */
+	public List<List<ToolSpec>> toolLists() {
+		return List.copyOf(toolLists);
+	}
+
+	@Override
+	public boolean supportsTools() {
+		return turns != null && configured;
+	}
+
+	@Override
+	public Turn completeWithTools(String system, List<Message> messages, List<ToolSpec> tools) throws LlmUnavailableException {
+		if (turns == null) {
+			return new Turn(complete(system, messages), List.of());
+		}
+		Call call = new Call(system, List.copyOf(messages));
+		calls.add(call);
+		toolLists.add(List.copyOf(tools));
+		if (failure != null) {
+			throw failure;
+		}
+		return turns.apply(call);
 	}
 
 	public void replyWith(String text) {

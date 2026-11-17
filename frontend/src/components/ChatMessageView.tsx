@@ -1,7 +1,10 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { notify } from '../ui/toastStore'
-import { api, ApiError, type AnswerStatus, type ChatMessage, type ChatSource, type ChatSuggestion } from '../api'
+import { api, ApiError, type AnswerStatus, type ChatMessage, type ChatSource, type ChatSuggestion, type PendingDeviceAction } from '../api'
+import Markdown from '../ui/Markdown'
+import { AlertIcon, ReportIcon } from '../ui/icons'
+import VisualView from './VisualView'
 
 const STATUS_NOTE: Record<AnswerStatus, { label: string; tone: string } | null> = {
   ANSWERED: null,
@@ -17,6 +20,7 @@ const TYPE_LABEL: Record<string, string> = {
   ANOMALY: 'Anomaly',
   AUTOMATION: 'Automation',
   ML_MODEL: 'ML model',
+  LIVE_DATA: 'Database query',
   DOCUMENT: 'Your document',
   KNOWLEDGE: 'Help text',
 }
@@ -112,12 +116,47 @@ function SuggestionCard({ s, onChange }: { s: ChatSuggestion; onChange: (s: Chat
   )
 }
 
+const TOOL_LABEL: Record<string, string> = {
+  get_current_readings: 'latest readings',
+  get_sensor_statistics: 'statistics',
+  get_sensor_trend: 'trend',
+  compare_periods: 'comparison',
+  get_motion_activity: 'motion activity',
+  get_device_status: 'device status',
+  get_anomalies: 'anomalies',
+  get_automation_history: 'automation history',
+  get_security_events: 'security events',
+  get_gas_incidents: 'gas incidents',
+  get_command_history: 'LED command history',
+  get_system_health: 'system health',
+  search_knowledge: 'help and notes',
+  create_report: 'report',
+  propose_device_command: 'command proposal',
+}
+
+function argsText(json: string): string {
+  try {
+    const o = JSON.parse(json) as Record<string, unknown>
+    return Object.entries(o).map(([k, v]) => `${k}: ${String(v)}`).join(', ')
+  } catch {
+    return ''
+  }
+}
+
 interface Props {
   message: ChatMessage
   onSuggestionChange: (messageId: string, s: ChatSuggestion) => void
+  /** A follow-up question was picked. */
+  onFollowUp?: (q: string) => void
+  /** The user wants to review a proposed device command (it is sent only after they confirm). */
+  onAction?: (a: PendingDeviceAction) => void
+  /** Hide follow-ups (they are only useful on the latest answer). */
+  latest?: boolean
+  /** Text-to-speech playback of this answer (omitted when the browser cannot speak). */
+  onReadAloud?: (text: string) => void
 }
 
-export default function ChatMessageView({ message, onSuggestionChange }: Props) {
+export default function ChatMessageView({ message, onSuggestionChange, onFollowUp, onAction, latest = false, onReadAloud }: Props) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -125,13 +164,50 @@ export default function ChatMessageView({ message, onSuggestionChange }: Props) 
       </div>
     )
   }
-  const note = message.status ? STATUS_NOTE[message.status] : null
+  const extras = message.extras
+  const fromData = message.sources.some((s) => s.type === 'LIVE_DATA')
+  const note = message.status
+    ? (message.status === 'NOT_CONFIGURED' || message.status === 'LLM_UNAVAILABLE') && fromData
+      ? { label: message.status === 'NOT_CONFIGURED' ? 'No AI model: answer built directly from your data' : 'AI model unavailable: answer built directly from your data', tone: 'bg-amber-500/20 text-amber-300' }
+      : STATUS_NOTE[message.status]
+    : null
+  const tools = extras?.tools ?? []
   return (
     <div className="flex items-start justify-start gap-2.5">
       <span aria-hidden="true" className="mt-1 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-slate-700 text-[11px] font-bold text-indigo-300">AI</span>
-      <div className="max-w-[88%] rounded-2xl rounded-tl-md bg-slate-700/70 px-4 py-3 text-[15px] leading-relaxed">
+      <div className="min-w-0 max-w-[92%] flex-1 rounded-2xl rounded-tl-md bg-slate-700/70 px-4 py-3 text-[15px] leading-relaxed sm:flex-none">
+        {extras?.safety && (
+          <p role="alert" className="mb-3 flex gap-2 rounded-lg border border-red-500/50 bg-red-500/15 p-2.5 text-sm text-red-200">
+            <AlertIcon aria-hidden="true" width={18} height={18} className="mt-0.5 shrink-0" />
+            <span><strong className="font-semibold">Safety: </strong>{extras.safety}</span>
+          </p>
+        )}
         {note && <p className={`mb-2 inline-block rounded px-2 py-0.5 text-xs font-medium ${note.tone}`}>{note.label}</p>}
-        <p className="whitespace-pre-wrap text-slate-100">{message.content}</p>
+        <Markdown text={message.content} />
+        {extras && extras.visuals.length > 0 && (
+          <div className="mt-3 grid gap-3">
+            {extras.visuals.map((v, i) => <VisualView key={i} visual={v} />)}
+          </div>
+        )}
+        {extras?.actions.map((a, i) => (
+          <div key={i} className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+            <p className="font-medium text-amber-200">Device command waiting for your confirmation</p>
+            <p className="mt-1 text-slate-100">{a.description}</p>
+            <p className="mt-1 text-xs text-slate-400">Nothing has been sent. Review it and confirm to send it to the device.</p>
+            {onAction && (
+              <button type="button" onClick={() => onAction(a)} className="mt-2 rounded-md bg-amber-500/80 px-3 py-1.5 text-xs font-medium text-slate-950 hover:bg-amber-400">
+                Review and confirm
+              </button>
+            )}
+          </div>
+        ))}
+        {extras && extras.reports.length > 0 && (
+          <p className="mt-3 text-sm">
+            <Link to={`/reports?open=${extras.reports[0]}`} className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-500/20 px-3 py-1.5 text-indigo-200 hover:bg-indigo-500/30">
+              <ReportIcon width={16} height={16} aria-hidden="true" />Open the report (preview and PDF)
+            </Link>
+          </p>
+        )}
         {message.warnings.length > 0 && (
           <ul className="mt-2 space-y-1 rounded bg-amber-500/10 p-2 text-xs text-amber-300" role="note">
             {message.warnings.map((w) => <li key={w}>Check this: {w}</li>)}
@@ -141,6 +217,32 @@ export default function ChatMessageView({ message, onSuggestionChange }: Props) 
           <SuggestionCard key={s.id} s={s} onChange={(next) => onSuggestionChange(message.id, next)} />
         ))}
         <SourceList sources={message.sources} />
+        {onReadAloud && message.content.trim() !== '' && (
+          <button type="button" onClick={() => onReadAloud(message.content)} aria-label="Read this answer aloud"
+            className="mt-2 text-xs text-indigo-300 hover:underline">
+            Read aloud
+          </button>
+        )}
+        {tools.length > 0 && (
+          <p className="mt-2 text-[11px] text-slate-400">
+            Data used:{' '}
+            {tools.map((t, i) => (
+              <span key={i} title={t.error ?? argsText(t.arguments)} className={t.ok ? '' : 'text-amber-300 line-through'}>
+                {i > 0 ? ' · ' : ''}{TOOL_LABEL[t.tool] ?? t.tool}{t.ok && argsText(t.arguments) ? ` (${argsText(t.arguments)})` : ''}
+              </span>
+            ))}
+          </p>
+        )}
+        {latest && onFollowUp && extras && extras.followUps.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2" aria-label="Suggested follow-up questions">
+            {extras.followUps.map((q) => (
+              <button key={q} type="button" onClick={() => onFollowUp(q)}
+                className="rounded-full border border-slate-600 bg-slate-800/70 px-3 py-1 text-xs text-slate-200 transition hover:border-indigo-400 hover:text-indigo-200">
+                {q}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

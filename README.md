@@ -360,97 +360,126 @@ Migration `V6__ml.sql` adds `ml_models` and `ml_anomalies`; `V11__ml_history.sql
 - All ML tests use **simulated** data. Their accuracy (including a perfect score on the simulated pattern in the PostgreSQL check) says the code works, not how well it would predict your home.
 - No physical ESP32 or sensor was used to test this chunk.
 
-## AI Assistant (RAG)
+## AI Assistant (RAG, database tools, reports)
 
-A chat page (**Assistant**) answers questions about *your own* devices, sensor history, anomalies, automation rules and ML models, and can **propose** automation rules. It is retrieval-augmented generation: the answer is written by a language model from records retrieved out of the database, and every answer lists the records it used.
+The **Assistant** page answers questions about *your own* home: current and historical readings, statistics and trends, motion/occupancy, device connectivity, anomalies, automation history, security and gas events, and system health. It remembers what a conversation is about, so follow-ups like "and yesterday?" or "compare it with last week" work. It can **prepare** (never send) device commands and **propose** automation rules, and it generates reports with charts and PDF downloads.
+
+Two kinds of knowledge are kept apart on purpose:
+
+- **Numbers come from SQL.** Statistics, comparisons, trends and counts are computed by aggregate queries over `telemetry_readings` and the event tables, never by vector search and never by the language model.
+- **Explanations come from retrieval.** Help text, your notes, rule descriptions and anomaly explanations are found by hybrid (keyword + vector) search.
 
 ### Architecture
 
 ```
-question ─► validate + rate limit ─► refresh your facts ─► embed question ─► pgvector search ─► prompt ─► LLM ─► checks ─► answer + sources
-                                      (from the DB,        (same model      (YOUR chunks +    (data in   (OpenAI-    (citations,
-                                       hash-skipped)        as the index)    shared help)      a fenced   compatible  numbers,
-                                                                                                block)     or Claude)  rule parser)
+question ─► validate, rate limit, load conversation focus
+         ─► safety: active gas incidents?  (deterministic banner, independent of the AI)
+         ─► QueryPlanner: which database tools does this question obviously need?  ─► ToolRegistry ─► SQL aggregates
+         ─► HybridRetriever: BM25 keyword + pgvector cosine, fused (RRF) and reranked over YOUR chunks + shared help
+         ─► LLM (Groq / OpenAI-compatible / Anthropic) with all of it as numbered, fenced DATA and the tool catalogue;
+            the model may call more tools (validated, owner-scoped, max 3 rounds / 6 calls)
+         ─► GroundingCheck (citations + every number must appear in a source) ─► answer + charts/tables + sources
+                                                                                + follow-up questions + proposed actions
 ```
 
 | Part | What it does |
 |---|---|
-| `LiveFacts` | Turns real records into text facts through the same owner-scoped services the REST API uses: device status and latest reading, per-day and last-24h sensor summaries (min/avg/max of values that exist; a missing sensor is "no value", never 0), anomalies, automation rules and recent runs, ML model state and hold-out metrics. |
-| `RagIndexer` + `Chunker` | Splits text into ~600-character overlapping chunks, embeds them and syncs the store: unchanged text (SHA-256) is not embedded again, facts whose source is gone are deleted. Also indexes the bundled help text (`resources/assistant/knowledge/*.md`, shared by all users) and notes users add. |
-| `RagChunkStore` | `rag_chunks` table. On PostgreSQL the vector is a pgvector `vector` column and search is exact cosine distance (`ORDER BY embedding <=> ?`); the H2 test database stores text vectors and computes the same cosine in Java. **Every search is restricted to `owner_user_id = caller OR owner_user_id IS NULL`**, and there is no search method without a caller. |
-| `EmbeddingClient` | `local` (default): a built-in feature-hashing embedder (256 dims, word stems, small synonym table, sublinear term weights) that needs no network or key. `openai`: any OpenAI-compatible `/embeddings` endpoint (OpenAI, Ollama, LM Studio...). Vectors of different models are never compared. |
-| `LlmClient` | `openai` (OpenAI chat-completions format: OpenAI, Ollama, LM Studio, OpenRouter...) or `anthropic` (Messages API), over the JDK `HttpClient` (no new dependencies). `none` if unset. |
-| `PromptBuilder` | Fixed rules in the system message; all retrieved text goes in a numbered `<<<CONTEXT token>>>` block in the user message, with a random per-request token, after `<<<` and `>>>` have been defanged so stored text cannot close the block or fake a rule-suggestion block. |
-| `GroundingCheck` | Removes citations to sources that do not exist and reports any number in the answer that appears in none of the sources (allowing for rounding), plus answers with numbers and no citation. |
-| `SuggestionParser` + `AssistantService` | Extracts an optional rule proposal, validates it with the real `AutomationValidator` and ownership checks, and stores it as a `PENDING` suggestion. It becomes a rule only through **Approve**. |
+| `analytics.AnalyticsRepository` | Read-only, parameterised SQL. Readings are aggregated per 15-minute window (`count/sum/min/max` per sensor, gas readings over the alert threshold, motion counts); 15 minutes divides every real UTC offset, so windows regroup exactly into local hours and days (Asia/Kolkata included). Every query joins `devices` and filters `owner_user_id = caller`, is bounded by a time range and, for lists, a `LIMIT`. |
+| `analytics.SensorAnalytics` | Exact statistics, hourly/daily series, period comparisons (the difference is computed here) and motion activity. A sensor without values is reported as "no values", never 0. |
+| `analytics.TimeRange` | `last_hour, last_24h, today, yesterday, last_7_days, this_week, last_week, last_30_days, this_month, last_month, custom` in the user's time zone (from the browser; default `ML_TIME_ZONE`). Current periods end *now*; at most 366 days. `previous()` gives the aligned period before ("today so far" vs the same hours yesterday). |
+| `assistant.tools.ToolRegistry` + `SmartHomeTools` | The allow-list of 13 tools: `get_current_readings`, `get_sensor_statistics`, `get_sensor_trend`, `compare_periods`, `get_motion_activity`, `get_device_status`, `get_anomalies`, `get_automation_history`, `get_security_events`, `get_system_health`, `search_knowledge`, `create_report`, `propose_device_command`. Arguments are checked by `ToolArgs` against each tool's declared parameters: unknown names, wrong types, values outside enums or ranges, bad dates, over-long strings and non-object JSON are rejected with a message the model can act on. Devices resolve only among the caller's own devices. **There is no SQL tool and no tool that changes settings, rules or devices.** |
+| `assistant.QueryPlanner` | Deterministic first pass: recognises sensors, periods (including ISO dates), comparisons ("than yesterday", "the day before"), trends, motion, anomalies, security, health, devices and report requests, and resolves follow-ups from the stored conversation focus (`chat_conversations.context_json`). Its results are fetched *before* the model runs, so real numbers are always there, and they are the answer when no model is available. |
+| `assistant.HybridRetriever` | Query preprocessing (stems, stop words, synonyms such as temp → temperature, smoke → gas), keyword candidates via bound `LIKE` parameters scored with Okapi BM25, vector search, reciprocal-rank fusion and explainable boosts (a device you name; device status first for reading questions). It only reorders owner-scoped results. |
+| `LlmProviderOrchestrator` | The `LlmClient` the assistant uses: primary provider (default Gemini) with one fallback attempt (default Groq) on HTTP 429, 5xx, timeout or network error. 400/401/403/404 and missing configuration never fail over; a provider without a key is skipped. After a recoverable primary failure the primary is skipped for `LLM_FAILOVER_COOLDOWN_SECONDS` (60). Tools run in `AssistantService` between model calls, so a failover never repeats a tool. |
+| `GeminiLlmProvider` | Native Gemini `generateContent` API (`x-goog-api-key` header), tool calling via `functionDeclarations` / `parametersJsonSchema`, thought signatures carried back on function calls. |
+| `GroqLlmProvider` / `HttpLlmClient` | `groq` (default base URL `https://api.groq.com/openai/v1`), `openai` (any OpenAI-compatible server) or `anthropic`, with native tool calling in both wire formats. If the provider rejects a tool request (e.g. Groq's 400 `tool_use_failed`) the question is answered once more without tools from the data already fetched. |
+| `PromptBuilder` | Fixed rules in the system message; retrieved chunks *and* tool results are numbered DATA (`[S1]…`) inside a fenced `<<<CONTEXT token>>>` block or tool messages, defanged so they cannot close the block. The conversation focus is passed as a separate line. |
+| `GroundingCheck` | Normalises citation styles (`【S1】` → `[S1]`), removes citations to non-existent sources, and flags any number that appears in no source (allowing rounding). |
+| `report.*` | `ReportBuilder` (deterministic; no model writes any part of a report), `PdfRenderer` (dependency-free PDF: Helvetica, tables, line and bar charts), `ReportService`, `ReportController`. |
 
-Migrations: `V7__assistant.sql` (tables `rag_chunks`, `chat_conversations`, `chat_messages`, `assistant_suggestions`) and the vendor-specific `V8__assistant_vectors.sql` (`db/vendor/postgresql`: `CREATE EXTENSION vector` + `embedding vector`; `db/vendor/h2`: a text column for tests), chosen by Flyway's `{vendor}` location. The pgvector extension is also created by `infra/postgres/init/01-pgvector.sql` on a fresh Docker volume.
+Migrations: `V7__assistant.sql`, `V8__assistant_vectors.sql` (vendor-specific), and `V13__assistant_intelligence.sql` (adds `chat_messages.extras_json`, `chat_conversations.context_json` and the `reports` table; additive only).
 
 ### Environment variables (all optional; put them in `.env`, never in code)
 
 | Variable | Meaning |
 |---|---|
-| `LLM_PROVIDER` | `openai` (any OpenAI-compatible server), `anthropic`, or unset/`none` |
-| `LLM_BASE_URL` | e.g. `http://localhost:11434/v1` for Ollama. Blank = the provider's own address |
-| `LLM_API_KEY` | not needed for a local server; required for OpenAI/Anthropic. Only sent in a request header, never logged or returned |
-| `LLM_MODEL` | model name (required for `openai`; Anthropic defaults to `claude-sonnet-5-5`) |
+| `LLM_PROVIDER` | `gemini` (default), `groq`, `openai` (any OpenAI-compatible server), `anthropic`, or `none` |
+| `LLM_PRIMARY_PROVIDER` | provider asked first; unset = `LLM_PROVIDER` |
+| `LLM_FALLBACK_PROVIDER` | `groq` (default) or `none`; ignored when equal to the primary |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | Gemini key and model (default `gemini-3-flash-preview`); `GEMINI_THINKING_LEVEL` default `low` |
+| `GROQ_API_KEY` / `GROQ_MODEL` | Groq key and model (default `openai/gpt-oss-120b`) |
+| `LLM_API_KEY` | key for `openai` / `anthropic`. Keys are only sent in a request header, never logged or returned |
+| `LLM_BASE_URL` / `LLM_MODEL` | for `openai` / `anthropic`: blank base = the provider's own address (`http://localhost:11434/v1` for Ollama) |
 | `LLM_TIMEOUT_SECONDS` | default 30 |
-| `EMBEDDING_PROVIDER` | `local` (default) or `openai` |
-| `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL` | for `openai` embeddings; the two address/key values default to the `LLM_` ones |
+| `EMBEDDING_PROVIDER` | `local` (default) or `openai`; `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL` for `openai` |
+| `ML_TIME_ZONE` | default zone for "today"/"yesterday" when the browser sends none (default `Asia/Kolkata`) |
 
-Tuning (retrieval `topK`, `minScore`, chunk size, limits) lives under `app.assistant.*` in `application.properties`. If you change the embedding model, the next chat re-embeds everything (chunks record their model).
+Tuning lives under `app.assistant.*` (`rag.top-k`, `rag.min-score`, `rag.max-context-chars` = 10000, chunk size, limits).
 
 ### Ingestion process
 
 1. **Help text** (shared): indexed on the first chat after start-up (and again if the embedding model changes).
-2. **Your live facts**: rebuilt from the database before a question is answered, at most every 10 seconds per user. Only changed text is re-embedded. Disowning a device deletes its chunks immediately; deleted rules, anomalies and old days drop out on the next refresh.
-3. **Your notes**: *Assistant → Your notes → Add note* (`POST /api/assistant/documents`, 20 to 20,000 characters, up to 20 notes). They are chunked and embedded immediately, and nothing is stored if embedding fails. Only you can retrieve them.
+2. **Your live facts**: rebuilt from the database before a question is answered, at most every 10 seconds per user; only changed text is re-embedded; facts whose source is gone are deleted.
+3. **Your notes**: *Assistant → Notes* (`POST /api/assistant/documents`, 20 to 20,000 characters, up to 20 notes), chunked into ~600-character overlapping pieces that break at paragraphs and sentences.
 
 ### Endpoints (user JWT; the owner always comes from the token)
 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/assistant/status` | model/embedding configuration (never a key), index size, limits |
-| POST | `/api/assistant/chat` | `{message, conversationId?}`. 200 with `assistantMessage{content, status, sources[], warnings[], suggestions[]}`; 400 invalid, 404 not your conversation, 429 too fast (15/min), 503 data store unavailable |
-| GET | `/api/assistant/conversations`, `/conversations/{id}/messages` | your history |
+| POST | `/api/assistant/chat` | `{message, conversationId?, timeZone?}` → `assistantMessage{content (Markdown), status, sources[], warnings[], suggestions[], extras{visuals[], actions[], reports[], followUps[], safety, tools[]}}`. 400 invalid, 404 not your conversation, 429 too fast (15/min), 503 data store unavailable |
+| POST | `/api/assistant/chat/stream` | the same, as server-sent events: `progress` (`{stage, detail}`) while it works, then one `done` (the full response) or `error` (`{status, message, fieldErrors}`). The answer text arrives whole, after the grounding check. Spring MVC `SseEmitter`, no WebFlux |
+| GET | `/api/assistant/conversations`, `/conversations/{id}/messages` | your history (messages include their charts and tables) |
 | DELETE | `/api/assistant/conversations/{id}` | |
-| GET, POST | `/api/assistant/documents` | your notes |
-| DELETE | `/api/assistant/documents/{id}` | |
-| GET | `/api/assistant/suggestions` | your pending rule suggestions |
-| POST | `/api/assistant/suggestions/{id}/approve` | **the only way a suggestion becomes a rule**; runs `AutomationService.create`, so all rule checks apply again. 409 if already decided or expired |
-| POST | `/api/assistant/suggestions/{id}/reject` | |
+| GET, POST, DELETE | `/api/assistant/documents[/{id}]` | your notes |
+| GET | `/api/assistant/suggestions`; POST `/suggestions/{id}/approve` or `/reject` | rule suggestions; **approve is the only way one becomes a rule** |
+| POST | `/api/reports` | `{kind: daily|weekly|monthly|custom, from?, to?, timeZone?, deviceId?}` → 201 with the full report. daily = today so far (or the day in `from`), weekly = last 7 days, monthly = last 30 days, custom = `from`..`to` inclusive (≤ 366 days). 400 invalid, 429 more than 6/min or 100 stored |
+| GET | `/api/reports`, `/api/reports/{id}` | history, one report |
+| GET | `/api/reports/{id}/pdf` | `application/pdf`, rendered from the stored snapshot |
+| DELETE | `/api/reports/{id}` | another user's report is a 404 |
 
-Answer `status`: `ANSWERED`; `NO_CONTEXT` (nothing relevant found, the model is not called); `NOT_CONFIGURED` (no language model: you still get the matching records); `LLM_UNAVAILABLE` (model timed out, rejected the key, rate limited...: records are still shown); `RETRIEVAL_UNAVAILABLE` (embedding service down).
+Answer `status`: `ANSWERED`; `NO_CONTEXT` (nothing relevant found and no data query applied: the model is not called); `NOT_CONFIGURED` (no model: the answer is assembled directly from the database query results, labelled as such); `LLM_UNAVAILABLE` (model timed out, rate limited, rejected the key...: same database-built answer); `RETRIEVAL_UNAVAILABLE` (embedding service down and the question needed text search).
+
+### Reports
+
+Sections: executive summary, sensor statistics table, environmental analysis (lowest/highest with their 15-minute window, comfort range, hourly or daily trend charts), occupancy and security (motion by hour of day, security events, gas incidents), anomalies, devices and automation (connectivity, offline events, automation outcomes, command results) and recommendations. Recommendations are fixed rules that quote the number they rest on (e.g. "Humidity averaged 71.0 %"); with nothing to flag the report says no action is needed. A report is a frozen JSON snapshot, so the PDF always matches the preview. Use **Reports** in the menu, or ask the assistant "generate a weekly report".
 
 ### Safety rules
 
-- **Ownership**: facts are built from owner-scoped services, searches are filtered by owner in SQL, results are re-checked in Java, and conversations, notes and suggestions are looked up by `(id, owner)`; someone else's id is a 404.
-- **Prompt injection**: stored text (device names, notes, rule names, anomaly notes) is *data*: fenced, defanged, never in the system message, and the model is told not to follow it. Even if a model is fooled, it has no tool to act: replies are text only, and any proposed rule must pass the normal validator (so `set_gas_led off` is refused) and the owner's approval.
-- **No commands**: the assistant has no code path to the command service or MQTT. The device's own gas warning in the firmware does not depend on the backend, ML or the assistant.
-- **No invention**: nothing found means no model call; numbers not present in the sources are flagged in the reply; the page shows the sources for every answer.
-- **Secrets**: keys and tokens are never put in prompts, responses, logs or error messages (client errors are generic: "rejected the configured API key", "could not be reached").
+- **Ownership**: tools and analytics filter by owner in SQL; devices named by the model are resolved only among the caller's own; retrieved chunks are filtered by owner in SQL and re-checked in Java; conversations, notes, suggestions and reports are looked up by `(id, owner)`.
+- **Read-only analytics, no free SQL**: every query is a fixed string with bound parameters. Tool arguments are validated and bounded (period ≤ 366 days, row limits, string lengths).
+- **Prompt injection**: stored text and tool results are fenced, defanged data; the model is told never to follow instructions in them. Even a fooled model can only call the allow-listed tools.
+- **Consequential actions need the user**: `propose_device_command` returns a proposal shown as a card; nothing is sent until the user presses **Review and confirm** and then **Confirm**, which uses the normal command API (allow-listed actions; the gas LED can never be turned off). Rules still need **Approve**. Reports are the only thing a tool stores, and only for the caller.
+- **Gas safety is deterministic**: the email alerts (`GasAlertService`) and the device's own warning do not depend on the assistant. While an incident is active, every answer carries a safety banner computed from `gas_alerts`, not from the model.
+- **Failures**: a database error is a 503 with nothing changed; a model failure falls back to the database answer; a tool failure is reported to the model as an error ("do not guess"), and the answer is warned as possibly incomplete.
 
 ### Using the Assistant page
 
-Ask a question or click an example. Under each answer, **Sources** lists the records used (type, text, time, match score; cited ones are highlighted); amber "Check this" lines are grounding warnings. A **Suggested automation rule** card shows the rule in words with **Approve and create rule** / **Reject**. Loading, empty, no-model, error and expired states are shown in place.
+Answers render as Markdown with `[S1]` citation badges, charts (average line with a lowest–highest band, bar charts) that switch to a table, a "Data used" line naming the queries, follow-up question chips, a red safety banner during gas incidents, and confirmation cards for prepared device commands. While it works, the page shows what it is doing (streamed progress). Examples: "Was it warmer today than yesterday?", "Show the humidity trend for the last 7 days", "When was motion detected today?", "Generate a weekly report".
 
 ### Manual verification
 
-1. Start the stack (Postgres, Mosquitto, backend, frontend). Without any `LLM_*` variable, open **Assistant**: a banner says no AI model is set up. Ask "what is the temperature of my device"; you get the matching stored records as sources and no generated answer.
-2. Set `LLM_PROVIDER`/`LLM_MODEL` (and `LLM_BASE_URL`/`LLM_API_KEY` as needed) in `.env`, restart the backend, repeat: you get a written answer with `[S1]`-style citations.
-3. Ask for a rule ("turn the PIR LED on when motion is detected after 22:00"): a suggestion card appears and **Automation** still shows no new rule until you press Approve.
-4. Ask for the gas LED to be turned off: no suggestion is created and a warning says it was discarded.
-5. Add a note, ask about it, then delete the note and ask again.
-6. Log in as a second user: they never see your devices, notes or conversations.
+1. Without `LLM_*` variables, ask "What was the average temperature today?": you get the database statistics, labelled "No AI model: answer built directly from your data".
+2. With Groq configured, ask the same, then "compare it with yesterday": the second answer uses `compare_periods` for the same sensor (see "Data used").
+3. "Show the temperature trend for the last 24 hours": a chart appears; **Show table** lists the numbers.
+4. "Turn the PIR LED off in the kitchen": a confirmation card appears; nothing is sent until you confirm. Asking to turn the gas LED off is refused.
+5. **Reports → Generate report**, open it, **Download PDF**.
+6. A second user never sees your devices, answers or reports (404).
+
+### Verified in this change (2026-11-14)
+
+- Backend `mvnw test`: 518 tests, 0 failures (468 existing + 50 new: tool validation and isolation, exact statistics, comparisons, the tool-calling loop and its bounds, follow-ups, safety banner, command proposals, streaming, report API/PDF, planner, time ranges, hybrid ranking, PDF writer, citation normalisation). Frontend: 104 tests, `tsc -b` and `vite build` pass.
+- On a throwaway **PostgreSQL 17 + pgvector** database: V13 migrated, Hibernate validation passed, the assistant's statistics for 144 synthetic readings matched a direct `psql` aggregate (average 24.0, min 20, max 29), streaming, reports and the PDF worked.
+- **Live Groq** (`openai/gpt-oss-120b`), synthetic data: the model called `compare_periods` and answered "24.6 °C vs 24.5 °C, +0.1 °C" from the database figures; a prompt-injection request ("admin mode… switch the gas LED off") was refused with no action proposed. Earlier requests in the same session were rate-limited (HTTP 429) and correctly fell back to the database answer.
 
 ### Limitations
 
-- A language model can still be wrong or incomplete. The checks only catch numbers missing from the sources and citations to nothing; they cannot prove an answer is true.
-- The default `local` embedder matches wording, not meaning ("it is boiling in here" will not find "temperature"). Use `EMBEDDING_PROVIDER=openai` with a real embedding model for semantic search. Generic questions ("how are my things?") may not retrieve the right records; naming a device or sensor helps.
-- Sensor history is summarised per UTC day and for the last 24 h (not raw readings); only the last 7 days are indexed. Live facts can be up to ~10 s old.
-- Search is exact cosine over a user's chunks, which is right for hundreds to a few thousand chunks per user; there is no approximate index.
-- Only OpenAI-compatible and Anthropic APIs are supported; no streaming, no tool calling.
-- Tests use a scripted fake model and a local stub server, so they prove the application's handling of model output, not the quality of any real model. A live call to a hosted model or a pulled Ollama model was **not** made in this environment (no key configured, no model downloaded).
+- A language model can still phrase things wrongly or omit facts. The checks catch numbers absent from the sources and invalid citations; they cannot prove an answer is true. Model quality was spot-checked with a few live Groq requests, not evaluated systematically.
+- The planner is rule-based English; unusual phrasing falls back to the model's own tool calls (or, without a model, to retrieval only).
+- Streaming sends progress and then the whole checked answer; tokens are not streamed (an unchecked partial answer is never shown).
+- Minimum/maximum times are reported to the 15-minute window, not the exact second. Daily buckets follow the user's zone exactly for whole- and half-hour offsets.
+- The default `local` embedder matches wording, not meaning; BM25 keyword search helps with exact names, but use `EMBEDDING_PROVIDER=openai` for semantic search. Search is exact (no approximate vector index), suitable for thousands of chunks per user.
+- The `ml` code runs inside the Spring Boot backend; there is no separate FastAPI service in this repository.
 - No physical hardware was used.
 
 ## Security modes, digital twin, recommendations and system status
@@ -576,7 +605,8 @@ With the stack running and a paired device (see "Try the whole pipeline without 
 | GET | `/api/twins`, `/api/devices/{id}/twin` | user JWT | reported versus confirmed state |
 | GET, POST | `/api/recommendations...` | user JWT | list, refresh, approve, dismiss |
 | GET | `/api/system/status` | user JWT | database, MQTT, devices, commands, sensors, ML, assistant |
-| GET, POST, DELETE | `/api/assistant/...` | user JWT | chat, history, notes and approval-gated rule suggestions, see [AI Assistant](#ai-assistant-rag) |
+| GET, POST, DELETE | `/api/assistant/...` | user JWT | chat (also streamed as SSE), history, notes and approval-gated rule suggestions, see [AI Assistant](#ai-assistant-rag-database-tools-reports) |
+| GET, POST, DELETE | `/api/reports...` | user JWT | generate, list, view, download PDF, delete reports |
 | DELETE | `/api/devices/{id}` | user JWT | disown (503 and nothing changed if the broker is unreachable) |
 | POST | `/api/device/pair` | pairing code | device-side pairing |
 | GET | `/api/device/me` | `X-Device-Id` + `X-Device-Key` | device checks its credential |

@@ -1,18 +1,19 @@
 package com.smarthome.assistant;
 
 import java.time.Clock;
+import java.time.DateTimeException;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -23,10 +24,15 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.smarthome.analytics.AnalyticsRepository;
+import com.smarthome.analytics.AnalyticsRepository.GasAlertRow;
+import com.smarthome.analytics.Visual;
+import com.smarthome.assistant.AssistantDtos.ActionDto;
 import com.smarthome.assistant.AssistantDtos.AnswerStatus;
 import com.smarthome.assistant.AssistantDtos.ChatResponse;
 import com.smarthome.assistant.AssistantDtos.ConversationDto;
 import com.smarthome.assistant.AssistantDtos.DocumentDto;
+import com.smarthome.assistant.AssistantDtos.ExtrasDto;
 import com.smarthome.assistant.AssistantDtos.IndexInfo;
 import com.smarthome.assistant.AssistantDtos.LimitsInfo;
 import com.smarthome.assistant.AssistantDtos.MessageDto;
@@ -34,17 +40,27 @@ import com.smarthome.assistant.AssistantDtos.ModelInfo;
 import com.smarthome.assistant.AssistantDtos.SourceDto;
 import com.smarthome.assistant.AssistantDtos.StatusResponse;
 import com.smarthome.assistant.AssistantDtos.SuggestionDto;
+import com.smarthome.assistant.AssistantDtos.ToolUseDto;
 import com.smarthome.assistant.AssistantExceptions.AssistantUnavailableException;
 import com.smarthome.assistant.AssistantExceptions.ConversationNotFoundException;
 import com.smarthome.assistant.AssistantExceptions.DocumentNotFoundException;
 import com.smarthome.assistant.AssistantExceptions.InvalidChatRequestException;
 import com.smarthome.assistant.AssistantExceptions.SuggestionNotFoundException;
 import com.smarthome.assistant.AssistantExceptions.SuggestionNotPendingException;
-import com.smarthome.assistant.AssistantExceptions.TooManyChatRequestsException;
 import com.smarthome.assistant.LlmClient.Message;
+import com.smarthome.assistant.LlmClient.ToolCall;
+import com.smarthome.assistant.LlmClient.Turn;
 import com.smarthome.assistant.PromptBuilder.Prompt;
 import com.smarthome.assistant.PromptBuilder.Source;
+import com.smarthome.assistant.QueryPlanner.Plan;
+import com.smarthome.assistant.QueryPlanner.PlannedCall;
 import com.smarthome.assistant.RagChunkStore.Hit;
+import com.smarthome.assistant.tools.Fmt;
+import com.smarthome.assistant.tools.ToolRegistry;
+import com.smarthome.assistant.tools.ToolTypes.Focus;
+import com.smarthome.assistant.tools.ToolTypes.PendingAction;
+import com.smarthome.assistant.tools.ToolTypes.ToolContext;
+import com.smarthome.assistant.tools.ToolTypes.ToolResult;
 import com.smarthome.automation.AutomationDtos.ConditionRequest;
 import com.smarthome.automation.AutomationDtos.RuleRequest;
 import com.smarthome.automation.AutomationDtos.RuleResponse;
@@ -53,30 +69,60 @@ import com.smarthome.automation.AutomationService;
 import com.smarthome.device.DeviceDtos.DeviceResponse;
 import com.smarthome.device.DeviceExceptions.DeviceNotFoundException;
 import com.smarthome.device.DeviceService;
+import com.smarthome.ml.MlProperties;
 
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * The chat flow: validate, retrieve (owner-scoped), ask the model with the retrieved text as data, check the answer
- * against the sources, store it. Whatever happens, the user gets an honest message: references only when no model is
- * available, "nothing found" when retrieval is empty, and a 503 (nothing changed) if the database is down.
+ * The chat flow:
+ * <ol>
+ * <li>validate, rate-limit, load the conversation and what it was about (its {@link Focus});</li>
+ * <li>check active gas incidents (deterministic safety banner, independent of any model);</li>
+ * <li>plan and run the database queries the question obviously needs ({@link QueryPlanner}), so real numbers are
+ * always available;</li>
+ * <li>hybrid retrieval over the owner's indexed facts, help text and documents ({@link HybridRetriever});</li>
+ * <li>ask the model with all of it as numbered, fenced DATA; the model may call more tools ({@link ToolRegistry}), each
+ * validated and owner-scoped, a bounded number of times;</li>
+ * <li>check the answer's numbers and citations against the sources ({@link GroundingCheck}) and store it with its charts,
+ * tables, follow-up questions and proposed (never executed) device actions.</li>
+ * </ol>
+ * Without a model, or when it fails, the answer is assembled from the same query results, so statistics are still
+ * correct. If the database is down the user gets a 503 and nothing changes.
  *
- * Nothing here can reach a device: the only write paths are the chat tables, the vector store and, after an explicit
- * approval by the owner, {@link AutomationService#create} (which applies all the normal checks, including the gas-LED rule).
+ * Nothing here can reach a device: the only write paths are the chat tables, the vector store, reports (on request),
+ * and, after an explicit approval by the owner, {@link AutomationService#create}.
  */
 @Service
 public class AssistantService {
 
 	private static final Logger log = LoggerFactory.getLogger(AssistantService.class);
-	private static final String NOTICE = "The assistant explains your own data and suggests rules. It cannot control devices, and a suggested rule "
-			+ "only exists after you approve it. It can be wrong: check the sources. It is not a safety system; the device's own gas warning is independent of it.";
+	private static final String NOTICE = "The assistant explains your own data, computes statistics from the database and suggests rules. It cannot "
+			+ "control devices: device changes and suggested rules only happen after you confirm or approve them. It can be wrong: check the sources. "
+			+ "It is not a safety system; the device's own gas warning is independent of it.";
+
+	static final int MAX_TOOL_ROUNDS = 3;
+	static final int MAX_TOOL_CALLS = 6;
+	static final int MAX_VISUALS = 6;
+	/** After this long in the tool loop no further tool round starts (nginx in front of the API times out at 120 s). */
+	static final long TOOL_BUDGET_NANOS = 45_000_000_000L;
+
+	/** Progress of one answer, for streaming. Stages: "planning", "querying", "searching", "thinking", "tool", "checking". */
+	@FunctionalInterface
+	public interface Progress {
+		Progress NONE = (stage, detail) -> { };
+
+		void update(String stage, String detail);
+	}
 
 	private final AssistantProperties props;
 	private final LlmClient llm;
 	private final EmbeddingClient embedder;
 	private final RagIndexer indexer;
 	private final RagChunkStore store;
+	private final HybridRetriever retriever;
+	private final ToolRegistry tools;
+	private final AnalyticsRepository analytics;
 	private final PromptBuilder prompts;
 	private final SuggestionParser parser;
 	private final ChatConversationRepository conversations;
@@ -87,17 +133,21 @@ public class AssistantService {
 	private final ObjectMapper mapper;
 	private final ChatRateLimiter limiter;
 	private final Clock clock;
+	private final ZoneId defaultZone;
 
 	public AssistantService(AssistantProperties props, LlmClient llm, EmbeddingClient embedder, RagIndexer indexer, RagChunkStore store,
-			PromptBuilder prompts, SuggestionParser parser, ChatConversationRepository conversations, ChatMessageRepository messages,
-			AssistantSuggestionRepository suggestions, AutomationService automation, DeviceService deviceService, ObjectMapper mapper,
-			ChatRateLimiter limiter, Clock clock) {
+			HybridRetriever retriever, ToolRegistry tools, AnalyticsRepository analytics, PromptBuilder prompts, SuggestionParser parser,
+			ChatConversationRepository conversations, ChatMessageRepository messages, AssistantSuggestionRepository suggestions,
+			AutomationService automation, DeviceService deviceService, ObjectMapper mapper, ChatRateLimiter limiter, Clock clock, MlProperties ml) {
 		this.limiter = limiter;
 		this.props = props;
 		this.llm = llm;
 		this.embedder = embedder;
 		this.indexer = indexer;
 		this.store = store;
+		this.retriever = retriever;
+		this.tools = tools;
+		this.analytics = analytics;
 		this.prompts = prompts;
 		this.parser = parser;
 		this.conversations = conversations;
@@ -107,11 +157,16 @@ public class AssistantService {
 		this.deviceService = deviceService;
 		this.mapper = mapper;
 		this.clock = clock;
+		this.defaultZone = ml.zone();
 	}
 
 	// ---- chat ----------------------------------------------------------------------------------
 
 	public ChatResponse chat(UUID ownerId, UUID conversationId, String rawMessage) {
+		return chat(ownerId, conversationId, rawMessage, null, Progress.NONE);
+	}
+
+	public ChatResponse chat(UUID ownerId, UUID conversationId, String rawMessage, String timeZone, Progress progress) {
 		int max = props.chat().maxMessageChars();
 		if (rawMessage == null || rawMessage.isBlank()) {
 			throw new InvalidChatRequestException("message", "Type a question first");
@@ -123,21 +178,24 @@ public class AssistantService {
 		if (question.isEmpty()) {
 			throw new InvalidChatRequestException("message", "Type a question first");
 		}
+		ZoneId zone = zone(timeZone);
 		limiter.check(ownerId);
 		Instant now = clock.instant();
 
 		ChatConversation conv;
 		List<Message> history;
 		ChatMessage userMsg;
+		Focus focus;
 		try {
 			conv = conversationId == null ? newConversation(ownerId, question, now) : ownedConversation(ownerId, conversationId);
 			history = history(conv.getId());
+			focus = readFocus(conv.getContextJson());
 			userMsg = messages.save(new ChatMessage(UUID.randomUUID(), conv.getId(), "user", question, null, null, null, now));
 		} catch (DataAccessException e) {
 			throw unavailable(e);
 		}
 
-		Answer a = answer(ownerId, question, history);
+		Answer a = answer(ownerId, question, history, focus, zone, progress);
 
 		UUID assistantId = UUID.randomUUID();
 		List<SuggestionDto> created = new ArrayList<>();
@@ -150,8 +208,9 @@ public class AssistantService {
 				}
 			}
 			ChatMessage assistantMsg = messages.save(new ChatMessage(assistantId, conv.getId(), "assistant", cut(a.text, 8000), a.status.name(),
-					sourcesJson(a.sources), warnings.isEmpty() ? null : warningsJson(warnings), clock.instant()));
+					sourcesJson(a.sources), warnings.isEmpty() ? null : warningsJson(warnings), extrasJson(a.extras), clock.instant()));
 			conv.touch(clock.instant());
+			conv.setContextJson(focusJson(a.focus));
 			conversations.save(conv);
 			return new ChatResponse(conv.getId(), conv.getTitle(), toDto(userMsg, List.of()), toDto(assistantMsg, created));
 		} catch (DataAccessException e) {
@@ -160,79 +219,370 @@ public class AssistantService {
 	}
 
 	/** What the pipeline produced, before anything is stored. */
-	private record Answer(AnswerStatus status, String text, List<SourceDto> sources, List<String> warnings, SuggestionParser.Proposal proposal) {
+	private record Answer(AnswerStatus status, String text, List<SourceDto> sources, List<String> warnings, SuggestionParser.Proposal proposal,
+			ExtrasDto extras, Focus focus) {
 	}
 
-	private Answer answer(UUID ownerId, String question, List<Message> history) {
-		List<Hit> hits;
+	/** The tool results gathered for one answer, numbered as sources. */
+	private static final class Gathered {
+		final List<ToolResult> results = new ArrayList<>();
+		final List<Hit> asHits = new ArrayList<>();
+		final Map<UUID, String> names;
+
+		Gathered(Map<UUID, String> names) {
+			this.names = names;
+		}
+	}
+
+	private Answer answer(UUID ownerId, String question, List<Message> history, Focus focus, ZoneId zone, Progress progress) {
+		Instant now = clock.instant();
+		Map<UUID, String> names;
+		String safety;
 		try {
-			indexer.ensureKnowledge();
-			indexer.refreshLive(ownerId);
-			float[] q = embedder.embedOne(question);
-			int topK = props.rag().topK();
-			List<Hit> candidates = new ArrayList<>(store.search(ownerId, q, embedder.modelId(), topK * 4, props.rag().minScore()));
-			boolean readings = asksAboutReadings(question);
-			if (readings) {
-				// The owner's per-device status chunks hold the latest stored values; make sure they are candidates even
-				// when their word-overlap score is below the cut-off (they list many fields, which dilutes the score).
-				Set<UUID> seen = candidates.stream().map(Hit::id).collect(Collectors.toSet());
-				for (Hit h : store.ownedOfType(ownerId, LiveFacts.DEVICE_STATUS, q, embedder.modelId(), MAX_STATUS_CHUNKS)) {
-					if (h.deviceUuid() != null && seen.add(h.id())) {
-						candidates.add(h);
-					}
-				}
-			}
-			hits = rerank(question, names(ownerId), candidates, topK, readings);
-		} catch (LlmUnavailableException e) {
-			return new Answer(AnswerStatus.RETRIEVAL_UNAVAILABLE, "I could not search your data right now: " + e.getMessage()
-					+ " Nothing was guessed. Please try again later.", List.of(), List.of(), null);
+			names = names(ownerId);
+			safety = safetyNotice(analytics.activeGasAlerts(ownerId), zone);
 		} catch (DataAccessException e) {
 			throw unavailable(e);
 		}
-		// Second line of defence behind the owner filter in the search itself.
+		ToolContext ctx = new ToolContext(ownerId, zone, now, names);
+
+		// 1. the queries the question obviously needs
+		progress.update("planning", "Understanding the question");
+		Plan plan = QueryPlanner.plan(question, names.values(), focus, mapper);
+		Gathered g = new Gathered(names);
+		for (PlannedCall c : plan.calls()) {
+			progress.update("querying", label(c.tool()));
+			record(g, tools.call(ctx, c.tool(), c.argumentsJson()), ownerId, now);
+		}
+		Focus newFocus = focusAfter(plan.focus(), g.results, names);
+
+		// 2. hybrid retrieval over indexed facts, help text and documents
+		progress.update("searching", "Searching your records and notes");
+		List<Hit> hits;
+		boolean retrievalFailed = false;
+		try {
+			indexer.ensureKnowledge();
+			indexer.refreshLive(ownerId);
+			int topK = props.rag().topK();
+			hits = retriever.retrieve(ownerId, question, topK, props.rag().minScore(), asksAboutReadings(question) && g.results.isEmpty(), names);
+		} catch (LlmUnavailableException e) {
+			if (g.results.isEmpty()) {
+				return new Answer(AnswerStatus.RETRIEVAL_UNAVAILABLE, "I could not search your data right now: " + e.getMessage()
+						+ " Nothing was guessed. Please try again later.", List.of(), List.of(), null, extras(g, List.of(), safety, plan, newFocus), newFocus);
+			}
+			hits = List.of();
+			retrievalFailed = true;
+		} catch (DataAccessException e) {
+			throw unavailable(e);
+		}
 		List<Hit> mine = new ArrayList<>();
 		for (Hit h : hits) {
 			if (h.ownerUserId() != null && !h.ownerUserId().equals(ownerId)) {
-				log.error("Dropped a retrieved chunk that belongs to another user (this must never happen)");
+				log.error("Dropped a retrieved chunk that belongs to another user (this must never happen)");     // second line of defence
 				continue;
 			}
 			mine.add(h);
 		}
-		if (mine.isEmpty()) {
+		List<String> baseWarnings = new ArrayList<>();
+		if (retrievalFailed) {
+			baseWarnings.add("Your notes and help text could not be searched right now; this answer uses the database queries only.");
+		}
+		boolean anyData = g.results.stream().anyMatch(ToolResult::ok);
+		if (mine.isEmpty() && !anyData && !(llm.configured() && llm.supportsTools())) {
 			return new Answer(AnswerStatus.NO_CONTEXT, "I could not find anything about that in your devices, readings, anomalies, automation rules "
-					+ "or the help text, so I will not guess. Try naming a device, a sensor or a rule, or add a document under Knowledge.", List.of(), List.of(), null);
+					+ "or the help text, so I will not guess. Try naming a device, a sensor or a period (for example \"temperature yesterday\"), or add a "
+					+ "document under Notes.", List.of(), List.of(), null, extras(g, List.of(), safety, plan, newFocus), newFocus);
 		}
 
-		Prompt prompt = prompts.build(question, history, mine, props.rag().maxContextChars());
-		List<SourceDto> uncited = toSources(prompt.sources(), List.of());
+		List<Hit> context = new ArrayList<>(g.asHits);
+		context.addAll(mine);
+		Prompt prompt = prompts.build(question, history, context, props.rag().maxContextChars(), focusNote(newFocus));
+
 		if (!llm.configured()) {
-			return new Answer(AnswerStatus.NOT_CONFIGURED, "No AI language model is set up (" + llm.notConfiguredReason().trim()
-					+ "). Here are the most relevant records I found; they are real stored data, not a generated answer.", uncited, List.of(), null);
+			String text = anyData ? dataAnswer(g, prompt.sources(), "No AI language model is set up (" + llm.notConfiguredReason().trim()
+					+ "), so this answer was assembled directly from your database, without AI:")
+					: "No AI language model is set up (" + llm.notConfiguredReason().trim()
+							+ "). Here are the most relevant records I found; they are real stored data, not a generated answer.";
+			return new Answer(AnswerStatus.NOT_CONFIGURED, text, toSources(prompt.sources(), List.of()), baseWarnings, null,
+					extras(g, List.of(), safety, plan, newFocus), newFocus);
 		}
 
+		// 3. the model, with tools
+		progress.update("thinking", "Writing the answer");
+		List<Source> sources = new ArrayList<>(prompt.sources());
+		StringBuilder sourceText = new StringBuilder(prompt.contextText());
 		String reply;
 		try {
-			reply = llm.complete(prompt.system(), prompt.messages());
+			reply = converse(prompt, ctx, g, sources, sourceText, ownerId, now, progress);
 		} catch (LlmUnavailableException e) {
-			return new Answer(AnswerStatus.LLM_UNAVAILABLE, "The AI model could not answer: " + e.getMessage()
-					+ " Here are the most relevant records I found.", uncited, List.of(), null);
+			String text = (anyData ? dataAnswer(g, sources, "The AI model could not answer (" + e.getMessage().strip() + "). Here is what your database shows:")
+					: "The AI model could not answer: " + e.getMessage() + " Here are the most relevant records I found.");
+			return new Answer(AnswerStatus.LLM_UNAVAILABLE, text, toSources(sources, List.of()), baseWarnings, null, extras(g, List.of(), safety, plan, newFocus),
+					focusAfter(newFocus, g.results, names));
 		} catch (RuntimeException e) {
 			log.warn("Language model client failed unexpectedly: {}", e.getClass().getSimpleName());
-			return new Answer(AnswerStatus.LLM_UNAVAILABLE, "The AI model could not answer because of an unexpected error. Here are the most relevant records I found.",
-					uncited, List.of(), null);
+			String text = anyData ? dataAnswer(g, sources, "The AI model could not answer because of an unexpected error. Here is what your database shows:")
+					: "The AI model could not answer because of an unexpected error. Here are the most relevant records I found.";
+			return new Answer(AnswerStatus.LLM_UNAVAILABLE, text, toSources(sources, List.of()), baseWarnings, null, extras(g, List.of(), safety, plan, newFocus),
+					newFocus);
 		}
 
+		progress.update("checking", "Checking the answer against the data");
 		SuggestionParser.Parsed parsed = parser.parse(reply);
 		String visible = parsed.visibleText();
 		if (visible.isBlank()) {
 			visible = parsed.proposal() != null ? "I prepared a rule suggestion below. It does nothing until you approve it." : "The AI model gave no answer.";
 		}
-		GroundingCheck.Result g = GroundingCheck.check(visible, prompt.sources().size(), prompt.contextText(), question);
-		List<String> warnings = new ArrayList<>(g.warnings());
+		GroundingCheck.Result check = GroundingCheck.check(visible, sources.size(), sourceText.toString(), question);
+		List<String> warnings = new ArrayList<>(baseWarnings);
+		warnings.addAll(check.warnings());
 		if (parsed.problem() != null) {
 			warnings.add("Rule suggestion: " + parsed.problem() + ".");
 		}
-		return new Answer(AnswerStatus.ANSWERED, g.text(), toSources(prompt.sources(), g.cited()), warnings, parsed.proposal());
+		for (ToolResult r : g.results) {
+			if (!r.ok() && r.error() != null && r.error().contains("database unavailable")) {
+				warnings.add("Some of your data could not be read; the answer may be incomplete.");
+				break;
+			}
+		}
+		Focus finalFocus = focusAfter(newFocus, g.results, names);
+		return new Answer(AnswerStatus.ANSWERED, check.text(), toSources(sources, check.cited()), warnings, parsed.proposal(),
+				extras(g, check.cited(), safety, plan, finalFocus), finalFocus);
+	}
+
+	/**
+	 * The model conversation: it may ask for tools up to {@link #MAX_TOOL_ROUNDS} times ({@link #MAX_TOOL_CALLS} calls in
+	 * all); each call is validated and executed by the registry and its result is added as a new numbered source. If the
+	 * provider rejects tool use, the question is answered once more without tools from the data already gathered.
+	 */
+	private String converse(Prompt prompt, ToolContext ctx, Gathered g, List<Source> sources, StringBuilder sourceText, UUID ownerId, Instant now,
+			Progress progress) throws LlmUnavailableException {
+		if (!llm.supportsTools()) {
+			return llm.complete(prompt.system(), prompt.messages());
+		}
+		List<Message> msgs = new ArrayList<>(prompt.messages());
+		int calls = 0;
+		long started = System.nanoTime();
+		for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
+			if (round > 0 && System.nanoTime() - started > TOOL_BUDGET_NANOS) {
+				break;                                          // slow provider: answer now, so the request stays inside the proxy timeout
+			}
+			Turn t;
+			try {
+				t = llm.completeWithTools(prompt.system(), msgs, calls >= MAX_TOOL_CALLS ? List.of() : tools.specs());
+			} catch (LlmUnavailableException e) {
+				if (e.reason() == LlmUnavailableException.Reason.BAD_RESPONSE) {
+					// e.g. Groq's 400 "tool_use_failed": answer once more without tools from the data gathered before the model ran
+					log.info("The model's tool request failed ({}); answering without tools", e.reason());
+					return llm.complete(prompt.system(), prompt.messages());
+				}
+				throw e;
+			}
+			if (!t.wantsTools()) {
+				return t.text();
+			}
+			List<ToolCall> accepted = new ArrayList<>();
+			List<Message> results = new ArrayList<>();
+			for (ToolCall c : t.toolCalls()) {
+				if (calls >= MAX_TOOL_CALLS) {
+					break;
+				}
+				calls++;
+				String id = c.id() == null || c.id().isBlank() ? "call_" + calls : Text.oneLine(c.id(), 64);
+				progress.update("tool", label(c.name()));
+				ToolResult r = tools.call(ctx, c.name(), c.arguments());
+				Hit h = record(g, r, ownerId, now);
+				String ref = null;
+				if (h != null) {
+					ref = "S" + (sources.size() + 1);           // after every source the model has already seen
+					sources.add(new Source(ref, h));
+					sourceText.append(h.content()).append('\n');
+				}
+				accepted.add(new ToolCall(id, Text.oneLine(c.name(), 60),
+						c.arguments() == null ? "{}" : Text.oneLine(c.arguments(), com.smarthome.assistant.tools.ToolArgs.MAX_JSON), c.signature()));
+				results.add(prompts.toolTurn(id, c.name(), ref == null ? "error" : ref, r.textForModel()));
+			}
+			msgs.add(Message.assistantCalls(t.text(), accepted));
+			msgs.addAll(results);
+		}
+		// Out of rounds: ask for the answer from what is there.
+		Turn last = llm.completeWithTools(prompt.system(), msgs, List.of());
+		if (last.text() == null || last.text().isBlank()) {
+			throw new LlmUnavailableException(LlmUnavailableException.Reason.BAD_RESPONSE, "The language model returned an empty answer.");
+		}
+		return last.text();
+	}
+
+	/** Records a tool result; a successful one becomes a LIVE_DATA pseudo-chunk (the caller numbers it). @return it, or null */
+	private Hit record(Gathered g, ToolResult r, UUID ownerId, Instant now) {
+		g.results.add(r);
+		if (!r.ok()) {
+			return null;
+		}
+		UUID device = null;                                  // a query about exactly one device is linked to it
+		String focused = r.output().focus() == null ? null : r.output().focus().device();
+		if (focused != null) {
+			for (Map.Entry<UUID, String> e : g.names.entrySet()) {
+				if (e.getValue().equals(focused)) {
+					device = e.getKey();
+				}
+			}
+		}
+		Hit h = new Hit(UUID.randomUUID(), ownerId, device, LIVE_DATA, "tool:" + r.tool(), 0, r.output().title(), r.output().text(), now, 1.0);
+		g.asHits.add(h);
+		return h;
+	}
+
+	public static final String LIVE_DATA = "LIVE_DATA";
+
+	/** The answer without a model: each query result with its title and, when it made it into the sources, its reference. */
+	private static String dataAnswer(Gathered g, List<Source> sources, String intro) {
+		Map<UUID, String> refs = new HashMap<>();
+		sources.forEach(s -> refs.put(s.hit().id(), s.ref()));
+		StringBuilder sb = new StringBuilder(intro).append("\n\n");
+		for (Hit h : g.asHits) {
+			String ref = refs.get(h.id());
+			sb.append("**").append(h.title()).append("**").append(ref == null ? "" : " [" + ref + "]").append("\n\n").append(h.content()).append("\n\n");
+		}
+		return sb.toString().strip();
+	}
+
+	private static String label(String tool) {
+		return switch (tool == null ? "" : tool) {
+			case "get_current_readings" -> "Reading the latest sensor values";
+			case "get_sensor_statistics" -> "Computing statistics in the database";
+			case "get_sensor_trend" -> "Building the trend";
+			case "compare_periods" -> "Comparing periods";
+			case "get_motion_activity" -> "Analysing motion and occupancy";
+			case "get_device_status" -> "Checking device connectivity";
+			case "get_anomalies" -> "Looking up anomalies";
+			case "get_automation_history" -> "Reading automation history";
+			case "get_security_events" -> "Reading security events";
+			case "get_gas_incidents" -> "Reading gas incident records";
+			case "get_command_history" -> "Reading LED command history";
+			case "get_system_health" -> "Checking system health";
+			case "search_knowledge" -> "Searching help and notes";
+			case "create_report" -> "Generating the report";
+			case "propose_device_command" -> "Preparing a device command for your confirmation";
+			default -> "Running a query";
+		};
+	}
+
+	/** Deterministic: an active gas incident always produces this banner, whatever the model says or whether there is one. */
+	static String safetyNotice(List<GasAlertRow> active, ZoneId zone) {
+		if (active.isEmpty()) {
+			return null;
+		}
+		List<String> parts = new ArrayList<>();
+		for (GasAlertRow a : active) {
+			parts.add(Text.oneLine(a.deviceName(), 60) + " since " + Fmt.time(a.startedAt(), zone) + " (peak " + a.peak() + " raw, threshold " + a.threshold() + ")");
+		}
+		return "Gas alert ACTIVE: " + String.join("; ", parts) + ". Follow the device's warning and local emergency guidance: ventilate, avoid flames and "
+				+ "switches, and leave the area if you smell gas. This notice comes from the alert system, not from the AI.";
+	}
+
+	private ExtrasDto extras(Gathered g, List<Integer> cited, String safety, Plan plan, Focus focus) {
+		List<Visual> visuals = new ArrayList<>();
+		List<ActionDto> actions = new ArrayList<>();
+		List<UUID> reports = new ArrayList<>();
+		List<ToolUseDto> used = new ArrayList<>();
+		for (ToolResult r : g.results) {
+			used.add(new ToolUseDto(r.tool(), r.argumentsJson(), r.ok(), r.ok() ? null : Text.oneLine(r.error(), 200)));
+			if (!r.ok()) {
+				continue;
+			}
+			for (Visual v : r.output().visuals()) {
+				if (visuals.size() < MAX_VISUALS) {
+					visuals.add(v);
+				}
+			}
+			PendingAction p = r.output().action();
+			if (p != null) {
+				actions.add(new ActionDto(p.deviceId(), p.deviceName(), p.action(), p.value(), p.description()));
+			}
+			if (r.output().reportId() != null) {
+				reports.add(r.output().reportId());
+			}
+		}
+		return new ExtrasDto(visuals, actions, reports, followUps(g.results, focus), safety, used);
+	}
+
+	/** Suggested next questions, from what was just looked at (deterministic, so they always make sense for the data). */
+	static List<String> followUps(List<ToolResult> results, Focus focus) {
+		Set<String> out = new LinkedHashSet<>();
+		String metric = focus == null || focus.metric() == null || "motion".equals(focus.metric()) ? "temperature" : focus.metric();
+		for (ToolResult r : results) {
+			if (!r.ok()) {
+				continue;
+			}
+			switch (r.tool()) {
+				case "get_current_readings" -> {
+					out.add("How did the " + metric + " change over the last 24 hours?");
+					out.add("Compare today with yesterday");
+				}
+				case "get_sensor_statistics" -> {
+					out.add("Show the " + metric + " trend for the same period");
+					out.add("Compare it with the previous period");
+				}
+				case "get_sensor_trend" -> {
+					out.add("What were the highest and lowest " + metric + " values?");
+					out.add("Compare it with last week");
+				}
+				case "compare_periods" -> out.add("Show the hourly " + metric + " trend for today");
+				case "get_motion_activity" -> {
+					out.add("Were there any security events this week?");
+					out.add("When is the house usually busiest?");
+				}
+				case "get_anomalies" -> out.add("Generate a weekly report");
+				case "get_device_status" -> out.add("Is the whole system healthy?");
+				case "get_security_events" -> out.add("Show motion activity for today");
+				case "get_gas_incidents" -> {
+					out.add("How has the gas level changed over the last 24 hours?");
+					out.add("What is the current gas reading?");
+				}
+				case "get_command_history" -> out.add("What is the current state of my devices?");
+				case "get_system_health" -> out.add("Which devices went offline this week?");
+				case "create_report" -> out.add("What should I improve based on this report?");
+				default -> { }
+			}
+		}
+		if (out.isEmpty()) {
+			out.add("What are the current readings?");
+			out.add("Summarise the last 7 days");
+			out.add("Were there any anomalies this week?");
+		}
+		return out.stream().limit(3).toList();
+	}
+
+	/** The focus after this turn: the planner's, refined by the arguments of the tools that actually ran. */
+	private Focus focusAfter(Focus planned, List<ToolResult> results, Map<UUID, String> names) {
+		Focus f = planned == null ? Focus.EMPTY : planned;
+		for (ToolResult r : results) {
+			if (r.ok() && r.output().focus() != null) {
+				f = f.merge(r.output().focus());
+			}
+		}
+		if (f.device() != null && !names.containsValue(f.device())) {
+			f = new Focus(f.metric(), f.period(), f.from(), f.to(), null);     // a device that is no longer the caller's
+		}
+		return f;
+	}
+
+	static String focusNote(Focus f) {
+		if (f == null || (f.metric() == null && f.period() == null && f.device() == null)) {
+			return null;
+		}
+		List<String> parts = new ArrayList<>();
+		if (f.metric() != null) {
+			parts.add("sensor " + f.metric());
+		}
+		if (f.period() != null) {
+			parts.add("period " + f.period() + ("custom".equals(f.period()) && f.from() != null ? " " + f.from() + " to " + f.to() : ""));
+		}
+		if (f.device() != null) {
+			parts.add("device \"" + f.device() + "\"");
+		}
+		return String.join(", ", parts);
 	}
 
 	/**
@@ -269,7 +619,6 @@ public class AssistantService {
 		return LiveFacts.DEVICE_STATUS.equals(h.sourceType()) && h.deviceUuid() != null;
 	}
 
-	private static final int MAX_STATUS_CHUNKS = 3;
 	private static final java.util.regex.Pattern READING_WORDS = java.util.regex.Pattern.compile(
 			"\\b(temperature|temp|degrees?|celsius|hot|cold|warm|humidity|humid|gas|smoke|mq-?2|motion|movement|pir|readings?|sensors?|values?)\\b");
 
@@ -416,13 +765,48 @@ public class AssistantService {
 	public StatusResponse status(UUID ownerId) {
 		ModelInfo l = new ModelInfo(llm.configured(), llm.provider(), llm.model(), llm.configured() ? "" : llm.notConfiguredReason());
 		ModelInfo e = new ModelInfo(true, embedder.local() ? "local" : "openai", embedder.modelId(),
-				embedder.local() ? "Built-in word-based embedder: matches wording, not meaning. Set EMBEDDING_PROVIDER=openai for semantic search." : "");
+				embedder.local() ? "Built-in word-based embedder: matches wording, not meaning (keyword search is combined with it). Set EMBEDDING_PROVIDER=openai for semantic search." : "");
 		IndexInfo index = guard(() -> new IndexInfo(store.countOwned(ownerId), store.countShared(), store.sources(ownerId, RagIndexer.DOCUMENT).size()));
 		AssistantProperties.Rag r = props.rag();
 		return new StatusResponse(l, e, index, new LimitsInfo(props.chat().maxMessageChars(), r.maxDocumentChars(), r.maxDocumentsPerUser(), r.topK()), NOTICE);
 	}
 
 	// ---- helpers -------------------------------------------------------------------------------
+
+	ZoneId zone(String name) {
+		if (name == null || name.isBlank()) {
+			return defaultZone;
+		}
+		try {
+			return ZoneId.of(Text.oneLine(name, 50));
+		} catch (DateTimeException e) {
+			return defaultZone;                                      // a bad browser zone must not break the chat
+		}
+	}
+
+	private Focus readFocus(String json) {
+		if (json == null || json.isBlank()) {
+			return Focus.EMPTY;
+		}
+		try {
+			return mapper.readValue(json, Focus.class);
+		} catch (RuntimeException e) {
+			return Focus.EMPTY;
+		}
+	}
+
+	private String focusJson(Focus f) {
+		if (f == null) {
+			return null;
+		}
+		Focus clean = new Focus(cap(f.metric(), 20), cap(f.period(), 20), cap(f.from(), 10), cap(f.to(), 10), cap(f.device(), 60));
+		String s = json(clean);
+		return s.length() <= 2000 ? s : null;
+	}
+
+	private static String cap(String s, int max) {
+		return s == null ? null : Text.oneLine(s, max);
+	}
 
 	private ChatConversation newConversation(UUID ownerId, String firstQuestion, Instant now) {
 		if (conversations.countByOwnerUserId(ownerId) >= props.chat().maxConversationsPerUser()) {
@@ -461,8 +845,8 @@ public class AssistantService {
 			Hit h = s.hit();
 			int n = Integer.parseInt(s.ref().substring(1));
 			String body = h.content().startsWith(h.title() + ": ") ? h.content().substring(h.title().length() + 2) : h.content();
-			out.add(new SourceDto(s.ref(), h.sourceType(), h.title(), Text.oneLine(body, 280), Math.round(h.score() * 1000) / 1000.0, h.asOf(),
-					h.deviceUuid(), cited.contains(n)));
+			out.add(new SourceDto(s.ref(), h.sourceType(), h.title(), Text.oneLine(body, LIVE_DATA.equals(h.sourceType()) ? 600 : 280),
+					Math.round(h.score() * 1000) / 1000.0, h.asOf(), h.deviceUuid(), cited.contains(n)));
 		}
 		return out;
 	}
@@ -471,7 +855,8 @@ public class AssistantService {
 		List<SourceDto> sources = m.getSourcesJson() == null ? List.of() : read(m.getSourcesJson(), new TypeReference<List<SourceDto>>() { });
 		List<String> warnings = m.getWarningsJson() == null ? List.of() : read(m.getWarningsJson(), new TypeReference<List<String>>() { });
 		AnswerStatus status = m.getAnswerStatus() == null ? null : AnswerStatus.valueOf(m.getAnswerStatus());
-		return new MessageDto(m.getId(), m.getRole(), m.getContent(), status, sources, warnings, sugg, m.getCreatedAt());
+		ExtrasDto extras = m.getExtrasJson() == null ? ExtrasDto.NONE : read(m.getExtrasJson(), new TypeReference<ExtrasDto>() { });
+		return new MessageDto(m.getId(), m.getRole(), m.getContent(), status, sources, warnings, sugg, m.getCreatedAt(), extras);
 	}
 
 	private SuggestionDto toDto(AssistantSuggestion s, Map<UUID, String> names) {
@@ -507,7 +892,7 @@ public class AssistantService {
 	}
 
 	private Map<UUID, String> names(UUID ownerId) {
-		Map<UUID, String> out = new HashMap<>();
+		Map<UUID, String> out = new LinkedHashMap<>();
 		for (DeviceResponse d : deviceService.list(ownerId)) {
 			out.put(d.id(), Text.oneLine(d.name(), 60));
 		}
@@ -550,6 +935,17 @@ public class AssistantService {
 			w.remove(w.size() - 1);
 		}
 		return json(w);
+	}
+
+	/** Extras as JSON that fits the column: visuals are dropped from the end first (they are the large part). */
+	private String extrasJson(ExtrasDto e) {
+		ExtrasDto x = e;
+		String s = json(x);
+		while (s.length() > 59000 && !x.visuals().isEmpty()) {
+			x = new ExtrasDto(x.visuals().subList(0, x.visuals().size() - 1), x.actions(), x.reports(), x.followUps(), x.safety(), x.tools());
+			s = json(x);
+		}
+		return s.length() > 59000 ? json(new ExtrasDto(List.of(), x.actions(), x.reports(), x.followUps(), x.safety(), List.of())) : s;
 	}
 
 	/** The references as JSON that fits the column: snippets are shortened first, then the list, so the stored JSON is always valid. */

@@ -35,3 +35,11 @@ backups/
 
 # Graphify 
 graphify-out/
+
+# Documentation
+documentation/
+# Claude Code
+.claude/
+CLAUDE.md
+**/CLAUDE.md
+CLAUDE.local.md

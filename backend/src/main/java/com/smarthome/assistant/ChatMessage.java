@@ -37,11 +37,20 @@ public class ChatMessage {
 	@Column(name = "created_at", nullable = false, updatable = false)
 	private Instant createdAt;
 
+	/** Charts, tables, follow-up questions, proposed actions and the tools used (JSON); null for older messages. */
+	@Column(name = "extras_json", length = 60000, updatable = false)
+	private String extrasJson;
+
 	protected ChatMessage() {
 	}
 
 	public ChatMessage(UUID id, UUID conversationId, String role, String content, String answerStatus, String sourcesJson,
 			String warningsJson, Instant createdAt) {
+		this(id, conversationId, role, content, answerStatus, sourcesJson, warningsJson, null, createdAt);
+	}
+
+	public ChatMessage(UUID id, UUID conversationId, String role, String content, String answerStatus, String sourcesJson,
+			String warningsJson, String extrasJson, Instant createdAt) {
 		this.id = id;
 		this.conversationId = conversationId;
 		this.role = role;
@@ -49,7 +58,12 @@ public class ChatMessage {
 		this.answerStatus = answerStatus;
 		this.sourcesJson = sourcesJson;
 		this.warningsJson = warningsJson;
+		this.extrasJson = extrasJson;
 		this.createdAt = createdAt;
+	}
+
+	public String getExtrasJson() {
+		return extrasJson;
 	}
 
 	public UUID getId() {

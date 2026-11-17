@@ -490,6 +490,43 @@ export interface ChatSuggestion {
   createdRuleId: string | null
 }
 
+/** A chart or table computed from database queries. A null value in a series is a gap (no data), never zero. */
+export interface Visual {
+  kind: 'line' | 'bar' | 'table'
+  title: string
+  unit: string
+  labels: string[]
+  series: { name: string; values: (number | null)[] }[]
+  columns: string[]
+  rows: string[][]
+}
+
+/** A device command the assistant prepared. Nothing is sent until the user confirms it. */
+export interface PendingDeviceAction {
+  deviceId: string
+  deviceName: string
+  action: string
+  value: string
+  description: string
+}
+
+export interface ToolUse {
+  tool: string
+  arguments: string
+  ok: boolean
+  error: string | null
+}
+
+export interface ChatExtras {
+  visuals: Visual[]
+  actions: PendingDeviceAction[]
+  reports: string[]
+  followUps: string[]
+  /** Set by the gas-alert system (never by the AI) while a gas incident is active. */
+  safety: string | null
+  tools: ToolUse[]
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
@@ -499,6 +536,153 @@ export interface ChatMessage {
   warnings: string[]
   suggestions: ChatSuggestion[]
   createdAt: string
+  /** Missing on messages from older servers. */
+  extras?: ChatExtras | null
+}
+
+export interface ChatProgress {
+  stage: string
+  detail: string
+}
+
+// ---- reports ----
+export type ReportKind = 'daily' | 'weekly' | 'monthly' | 'custom'
+export interface ReportSection {
+  heading: string
+  paragraphs: string[]
+  bullets: string[]
+  visuals: Visual[]
+}
+export interface ReportSummary {
+  id: string
+  kind: string
+  title: string
+  periodFrom: string
+  periodTo: string
+  timeZone: string
+  deviceId: string | null
+  summary: string
+  createdAt: string
+}
+export interface ReportDetail extends ReportSummary {
+  content: { title: string; periodLabel: string; scope: string; generatedAt: string; sections: ReportSection[]; notes: string[] }
+}
+export interface ReportRequest {
+  kind: ReportKind
+  from?: string
+  to?: string
+  timeZone?: string
+  deviceId?: string
+}
+
+export const browserTimeZone = (): string | undefined => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The chat as server-sent events: progress updates while the answer is prepared, then the whole (checked) answer.
+ * Falls back to the plain request if streaming is not available.
+ */
+export async function chatStream(message: string, conversationId: string | undefined, onProgress: (p: ChatProgress) => void): Promise<ChatReply> {
+  const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream' })
+  const token = tokenStore.get()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  let res: Response
+  try {
+    res = await fetch('/api/assistant/chat/stream', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ message, conversationId, timeZone: browserTimeZone() }),
+    })
+  } catch {
+    throw new ApiError(0, 'Cannot reach the server. Is the backend running?')
+  }
+  if (res.status === 401) {
+    onUnauthorized()
+    throw new ApiError(401, 'Your session has ended. Please sign in again.')
+  }
+  // Fall back to the plain endpoint only when streaming itself is unavailable (an older backend, or no readable body).
+  // Any other failure (validation, rate limit, outage, proxy timeout) is reported as is: resending could ask the same
+  // question twice, and the first attempt may already have been answered and stored.
+  if (res.status === 404 || res.status === 405 || (res.ok && (!res.body || typeof res.body.getReader !== 'function'))) {
+    return api.chat(message, conversationId)
+  }
+  if (!res.ok) {
+    let body: { message?: string; fieldErrors?: Record<string, string> } = {}
+    try {
+      body = await res.json()
+    } catch {
+      // non-JSON error body (for example a proxy error page)
+    }
+    throw new ApiError(res.status, body.message ?? `Request failed (HTTP ${res.status})`, body.fieldErrors)
+  }
+  if (!res.body) throw new ApiError(0, 'The answer stream could not be read.')
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (value) buffer += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buffer.search(/\r?\n\r?\n/)) >= 0) {
+      const block = buffer.slice(0, idx)
+      buffer = buffer.slice(idx).replace(/^\r?\n\r?\n/, '')
+      const event = parseSse(block)
+      if (!event) continue
+      if (event.name === 'progress') onProgress(event.data as ChatProgress)
+      else if (event.name === 'done') return event.data as ChatReply
+      else if (event.name === 'error') {
+        const e = event.data as { status: number; message: string; fieldErrors?: Record<string, string> }
+        throw new ApiError(e.status, e.message, e.fieldErrors ?? {})
+      }
+    }
+    if (done) break
+  }
+  throw new ApiError(0, 'The answer stream ended early. The answer may still appear in the conversation; reload it.')
+}
+
+/** One server-sent event block ("event: x" / "data: ..." lines). */
+export function parseSse(block: string): { name: string; data: unknown } | null {
+  let name = 'message'
+  const data: string[] = []
+  for (const line of block.split(/\r?\n/)) {
+    if (line.startsWith('event:')) name = line.slice(6).trim()
+    else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''))
+  }
+  if (data.length === 0) return null
+  try {
+    return { name, data: JSON.parse(data.join('\n')) }
+  } catch {
+    return null
+  }
+}
+
+/** Downloads a report as PDF (with the session token, so it cannot be a plain link). */
+export async function downloadReportPdf(id: string, filename: string): Promise<void> {
+  const headers = new Headers()
+  const token = tokenStore.get()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  let res: Response
+  try {
+    res = await fetch(`/api/reports/${id}/pdf`, { headers })
+  } catch {
+    throw new ApiError(0, 'Cannot reach the server. Is the backend running?')
+  }
+  if (res.status === 401) onUnauthorized()
+  if (!res.ok) throw new ApiError(res.status, `Could not download the PDF (HTTP ${res.status})`)
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 export interface ChatReply {
@@ -693,7 +877,13 @@ export const api = {
   systemStatus: () => request<SystemStatus>('/api/system/status', {}, true),
   assistantStatus: () => request<AssistantStatus>('/api/assistant/status', {}, true),
   chat: (message: string, conversationId?: string) =>
-    request<ChatReply>('/api/assistant/chat', { method: 'POST', body: JSON.stringify({ message, conversationId }) }, true),
+    request<ChatReply>('/api/assistant/chat', { method: 'POST', body: JSON.stringify({ message, conversationId, timeZone: browserTimeZone() }) }, true),
+  chatStream: (message: string, conversationId: string | undefined, onProgress: (p: ChatProgress) => void) =>
+    chatStream(message, conversationId, onProgress),
+  reports: () => request<ReportSummary[]>('/api/reports', {}, true),
+  report: (id: string) => request<ReportDetail>(`/api/reports/${id}`, {}, true),
+  createReport: (r: ReportRequest) => request<ReportDetail>('/api/reports', { method: 'POST', body: JSON.stringify({ timeZone: browserTimeZone(), ...r }) }, true),
+  deleteReport: (id: string) => request<void>(`/api/reports/${id}`, { method: 'DELETE' }, true),
   conversations: () => request<Conversation[]>('/api/assistant/conversations', {}, true),
   conversationMessages: (id: string) => request<ChatMessage[]>(`/api/assistant/conversations/${id}/messages`, {}, true),
   deleteConversation: (id: string) => request<void>(`/api/assistant/conversations/${id}`, { method: 'DELETE' }, true),

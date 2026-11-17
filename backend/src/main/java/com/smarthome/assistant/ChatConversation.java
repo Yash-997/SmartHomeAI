@@ -38,8 +38,20 @@ public class ChatConversation {
 		this.updatedAt = now;
 	}
 
+	/** What the conversation was last about (JSON of a tools Focus), for resolving follow-up questions. */
+	@Column(name = "context_json", length = 2000)
+	private String contextJson;
+
 	public void touch(Instant now) {
 		this.updatedAt = now;
+	}
+
+	public String getContextJson() {
+		return contextJson;
+	}
+
+	public void setContextJson(String contextJson) {
+		this.contextJson = contextJson;
 	}
 
 	public UUID getId() {

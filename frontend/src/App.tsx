@@ -10,6 +10,7 @@ import Diagnostics from './pages/Diagnostics'
 import Insights from './pages/Insights'
 import Login from './pages/Login'
 import Register from './pages/Register'
+import Reports from './pages/Reports'
 import Security from './pages/Security'
 import Backdrop from './ui/Backdrop'
 import ToastHost from './ui/ToastHost'
@@ -43,6 +44,7 @@ function AnimatedRoutes() {
           <Route path="/diagnostics" element={<RequireAuth><Diagnostics /></RequireAuth>} />
           <Route path="/insights" element={<RequireAuth><Insights /></RequireAuth>} />
           <Route path="/assistant" element={<RequireAuth><Assistant /></RequireAuth>} />
+          <Route path="/reports" element={<RequireAuth><Reports /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </m.div>

@@ -170,6 +170,38 @@ public class RagChunkStore {
 		return all.stream().sorted(Comparator.comparingDouble(Scored::score).reversed()).limit(limit).map(Scored::hit).toList();
 	}
 
+	/**
+	 * Keyword candidates for hybrid search: the caller's own chunks and the shared help text whose content contains at
+	 * least one of {@code terms} (lower-case word stems, letters and digits only). The terms are bound parameters, never
+	 * SQL text. {@code score} is 0 here; the caller ranks the candidates (BM25).
+	 */
+	public List<Hit> keywordCandidates(UUID callerId, List<String> terms, String model, int limit) {
+		if (callerId == null) {
+			throw new IllegalArgumentException("A search always needs the caller's user id");
+		}
+		List<String> safe = terms.stream().filter(t -> t.matches("[\\p{L}\\p{N}]{2,40}")).distinct().limit(8).toList();
+		if (safe.isEmpty()) {
+			return List.of();
+		}
+		StringBuilder sql = new StringBuilder("select id, owner_user_id, device_uuid, source_type, source_key, chunk_index, title, content, as_of "
+				+ "from rag_chunks where (owner_user_id = ? or owner_user_id is null) and embedding_model = ? and (");
+		List<Object> args = new ArrayList<>(List.of(callerId, model));
+		for (int i = 0; i < safe.size(); i++) {
+			sql.append(i == 0 ? "" : " or ").append("lower(content) like ?");
+			args.add("%" + safe.get(i) + "%");
+		}
+		sql.append(") limit ?");
+		args.add(Math.max(1, Math.min(500, limit)));
+		return jdbc.query(sql.toString(), (rs, i) -> hit(rs, 0), args.toArray());
+	}
+
+	/** Chunks the caller can search (own + shared help) for one embedding model: the corpus size used by BM25. */
+	public long countSearchable(UUID callerId, String model) {
+		Long n = jdbc.queryForObject("select count(*) from rag_chunks where (owner_user_id = ? or owner_user_id is null) and embedding_model = ?",
+				Long.class, callerId, model);
+		return n == null ? 0 : n;
+	}
+
 	private List<Hit> searchPostgres(UUID caller, float[] q, String model, int topK) {
 		String vec = literal(q);
 		return jdbc.query("select id, owner_user_id, device_uuid, source_type, source_key, chunk_index, title, content, as_of, "

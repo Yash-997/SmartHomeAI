@@ -1,4 +1,4 @@
-// Recognises a spoken or typed LED command. Deliberately deterministic and narrow: only an imperative sentence that
+// Recognises a typed LED command. Deliberately deterministic and narrow: only an imperative sentence that
 // names one output and one mode counts, so a question ("is the PIR LED on?") is never mistaken for a command. A
 // recognised command is only a proposal; nothing is sent until the user confirms it (see Assistant.tsx).
 import type { Device } from '../api'

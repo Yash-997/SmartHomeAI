@@ -7,39 +7,28 @@ import {
   type ChatSuggestion,
   type Command,
   type Conversation,
+  type PendingDeviceAction,
 } from '../api'
 import ChatMessageView from '../components/ChatMessageView'
 import CommandCard from '../components/CommandCard'
 import { ChatIcon, ChevronDownIcon, PlusIcon } from '../ui/icons'
 import Shell from '../components/Shell'
 import KnowledgePanel from '../components/KnowledgePanel'
-import VoicePanel from '../components/VoicePanel'
 import { FINAL, outcomeText, type CommandItem } from '../voice/commands'
-import { confirmationReply, describeCommand, deviceNamedIn, devicesFor, parseDeviceCommand } from '../voice/intent'
-import { useSpeechRecognition } from '../voice/useSpeechRecognition'
+import { confirmationReply, deviceNamedIn, devicesFor, parseDeviceCommand } from '../voice/intent'
 import { useSpeechSynthesis } from '../voice/useSpeechSynthesis'
 
 const EXAMPLES = [
   'What is the current temperature and humidity of my devices?',
-  'Were there any anomalies recently, and what do they mean?',
-  'Which automation rules do I have and when did they last run?',
-  'Suggest a rule that turns the PIR LED on when motion is detected after 22:00.',
+  'Was it warmer today than yesterday?',
+  'Show the humidity trend for the last 7 days',
+  'When was motion detected today?',
+  'Were there any anomalies or security events this week?',
+  'Generate a weekly report',
 ]
 
-const VOICE_EXAMPLES = ['What is the current temperature?', 'Explain the latest gas sensor readings.', 'Turn on the PIR indicator LED.']
-
-type Mode = 'text' | 'voice'
-const MODE_KEY = 'smarthome.assistant.mode'
 const POLL_MS = 1000
 let nextItemId = 0
-
-function readMode(): Mode {
-  try {
-    return localStorage.getItem(MODE_KEY) === 'voice' ? 'voice' : 'text'
-  } catch {
-    return 'text'
-  }
-}
 
 /** Polls the command until the device has answered (or it can no longer answer). */
 async function waitForAck(deviceId: string, first: Command, alive: () => boolean): Promise<Command> {
@@ -67,16 +56,14 @@ export default function Assistant() {
   const [threadError, setThreadError] = useState('')
   const [input, setInput] = useState('')
   const [pending, setPending] = useState<string | null>(null)
+  const [progress, setProgress] = useState('')
   const [error, setError] = useState('')
-  const [mode, setModeState] = useState<Mode>(readMode)
   const [items, setItems] = useState<CommandItem[]>([])
-  const [lastAnswer, setLastAnswer] = useState<ChatMessage | null>(null)
   const fetched = useRef<Set<string>>(new Set())
   const endRef = useRef<HTMLDivElement | null>(null)
   // Synchronous guards: React state updates are not visible to a second call in the same tick.
   const inFlight = useRef(false)
   const itemsRef = useRef<CommandItem[]>([])
-  const modeRef = useRef<Mode>(mode)
   const mounted = useRef(true)
 
   const tts = useSpeechSynthesis()
@@ -84,9 +71,6 @@ export default function Assistant() {
   useEffect(() => {
     itemsRef.current = items
   }, [items])
-  useEffect(() => {
-    modeRef.current = mode
-  }, [mode])
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -141,20 +125,18 @@ export default function Assistant() {
     setError('')
   }
 
-  /** Answers are read aloud in voice mode, or when the question itself was spoken. */
-  const sayIfVoice = (text: string, spoken: boolean) => {
-    if (spoken || modeRef.current === 'voice') tts.speak(text)
-  }
+  // ---- questions ------------------------------------------------------------------------------
 
-  // ---- questions: the same /api/assistant/chat call for typed and spoken input ----------------
-
-  const ask = async (q: string, spoken: boolean) => {
+  const ask = async (q: string) => {
     if (inFlight.current) return
     inFlight.current = true
     setPending(q)
+    setProgress('')
     setError('')
     try {
-      const reply = await api.chat(q, active ?? undefined)
+      const reply = typeof api.chatStream === 'function'
+        ? await api.chatStream(q, active ?? undefined, (p) => setProgress(p.detail))
+        : await api.chat(q, active ?? undefined)
       const id = reply.conversationId
       fetched.current.add(id)
       setThreads((t) => ({ ...t, [id]: [...(active ? (t[active] ?? []) : draft), reply.userMessage, reply.assistantMessage] }))
@@ -163,15 +145,12 @@ export default function Assistant() {
         setItems((list) => list.map((i) => (i.convKey === 'draft' ? { ...i, convKey: id } : i)))
         setActive(id)
       }
-      if (!spoken) setInput('')
-      setLastAnswer(reply.assistantMessage)
-      sayIfVoice(reply.assistantMessage.content, spoken)
+      setInput('')
       loadConversations()
       loadStatus()
     } catch (e) {
       const msg = e instanceof ApiError ? (e.fieldErrors.message ?? e.message) : 'Something went wrong. Please try again.'
       setError(msg)
-      sayIfVoice(msg, spoken)
     } finally {
       inFlight.current = false
       setPending(null)
@@ -185,7 +164,7 @@ export default function Assistant() {
     setItems(itemsRef.current)
   }
 
-  const propose = async (said: string, spoken: boolean) => {
+  const propose = async (said: string) => {
     const intent = parseDeviceCommand(said)
     if (!intent) return false
     const item: CommandItem = {
@@ -193,7 +172,6 @@ export default function Assistant() {
       convKey,
       afterIndex: messages?.length ?? 0,
       said,
-      spoken,
       action: intent.action,
       value: intent.kind === 'command' ? intent.value : 'off',
       phase: intent.kind === 'refused' ? 'refused' : 'loading',
@@ -204,27 +182,20 @@ export default function Assistant() {
     }
     itemsRef.current = [...itemsRef.current, item]
     setItems(itemsRef.current)
-    if (!spoken) setInput('')
-    if (intent.kind === 'refused') {
-      sayIfVoice(intent.reason, spoken)
-      return true
-    }
+    setInput('')
+    if (intent.kind === 'refused') return true
     try {
       const eligible = devicesFor(await api.listDevices(), intent.action, intent.value)
       if (eligible.length === 0) {
         const msg = 'None of your devices has this output. Pair a device on the Devices page first.'
         patchItem(item.id, (i) => ({ ...i, phase: 'error', message: msg }))
-        sayIfVoice(msg, spoken)
         return true
       }
       const chosen = deviceNamedIn(eligible, said) ?? (eligible.length === 1 ? eligible[0] : null)
       patchItem(item.id, (i) => ({ ...i, phase: 'confirm', devices: eligible, deviceId: chosen?.id ?? null }))
-      const what = describeCommand(intent.action, intent.value)
-      sayIfVoice(chosen ? `${what} on ${chosen.name}? Please confirm.` : `${what}. Which device? Choose it on screen, then confirm.`, spoken)
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : 'Could not load your devices.'
       patchItem(item.id, (i) => ({ ...i, phase: 'error', message: msg }))
-      sayIfVoice(msg, spoken)
     }
     return true
   }
@@ -241,66 +212,65 @@ export default function Assistant() {
       if (!mounted.current) return
       const text = outcomeText({ ...item, deviceId }, final)
       patchItem(id, (i) => ({ ...i, phase: 'done', command: final, message: text }))
-      sayIfVoice(text, item.spoken)
     } catch (e) {
       const msg = e instanceof ApiError ? (e.fieldErrors.value ?? e.fieldErrors.action ?? e.message) : 'Could not send the command.'
       patchItem(id, (i) => ({ ...i, phase: 'error', message: msg }))
-      sayIfVoice(msg, item.spoken)
     }
   }
 
-  const cancelItem = (id: string, spoken = false) => {
-    patchItem(id, (i) => (i.phase === 'confirm' || i.phase === 'loading' ? { ...i, phase: 'cancelled' } : i))
-    if (spoken) sayIfVoice('Cancelled. Nothing was sent.', true)
+  /** A command the assistant prepared goes through the same confirm-then-send card as a typed command. */
+  const reviewAction = async (a: PendingDeviceAction) => {
+    const item: CommandItem = {
+      id: `cmd-${++nextItemId}`,
+      convKey,
+      afterIndex: messages?.length ?? 0,
+      said: a.description,
+      action: a.action,
+      value: a.value,
+      phase: 'loading',
+      devices: [],
+      deviceId: null,
+      command: null,
+      message: '',
+    }
+    itemsRef.current = [...itemsRef.current, item]
+    setItems(itemsRef.current)
+    try {
+      const eligible = devicesFor(await api.listDevices(), a.action, a.value)
+      const target = eligible.find((d) => d.id === a.deviceId)
+      if (!target) {
+        patchItem(item.id, (i) => ({ ...i, phase: 'error', message: 'That device can no longer take this command.' }))
+        return
+      }
+      patchItem(item.id, (i) => ({ ...i, phase: 'confirm', devices: eligible, deviceId: target.id }))
+    } catch (e) {
+      patchItem(item.id, (i) => ({ ...i, phase: 'error', message: e instanceof ApiError ? e.message : 'Could not load your devices.' }))
+    }
   }
 
-  // ---- one entry point for everything the user types or says ----------------------------------
+  const cancelItem = (id: string) => {
+    patchItem(id, (i) => (i.phase === 'confirm' || i.phase === 'loading' ? { ...i, phase: 'cancelled' } : i))
+  }
 
-  const submit = async (text: string, spoken: boolean) => {
+  // ---- one entry point for everything the user types ------------------------------------------
+
+  const submit = async (text: string) => {
     const q = text.trim()
     if (!q || inFlight.current) return
     const waiting = [...itemsRef.current].reverse().find((i) => i.convKey === convKey && i.phase === 'confirm')
     if (waiting) {
       const reply = confirmationReply(q)
       if (reply) {
-        if (!spoken) setInput('')
+        setInput('')
         if (reply === 'yes') {
           if (waiting.deviceId) void confirm(waiting.id)
-          else sayIfVoice('Choose the device on screen first, then confirm.', spoken)
-        } else cancelItem(waiting.id, spoken)
+          else setError('Choose the device on screen first, then confirm.')
+        } else cancelItem(waiting.id)
         return
       }
     }
-    if (await propose(q, spoken)) return
-    await ask(q, spoken)
-  }
-
-  const recognition = useSpeechRecognition({
-    onFinal: (text) => {
-      if (modeRef.current === 'voice') void submit(text, true)
-      else setInput((prev) => (prev.trim() ? `${prev.trimEnd()} ${text}` : text)) // dictation: review, then send
-    },
-  })
-
-  const toggleMic = () => {
-    if (recognition.state === 'listening') {
-      recognition.stop()
-      return
-    }
-    tts.stop() // never listen to our own voice
-    recognition.clearError()
-    void recognition.start()
-  }
-
-  const setMode = (m: Mode) => {
-    if (m === mode) return
-    recognition.cancel() // switching never submits a half-heard sentence
-    setModeState(m)
-    try {
-      localStorage.setItem(MODE_KEY, m)
-    } catch {
-      // not remembered
-    }
+    if (await propose(q)) return
+    await ask(q)
   }
 
   const changeSuggestion = (messageId: string, next: ChatSuggestion) => {
@@ -329,11 +299,10 @@ export default function Assistant() {
   const status = statusLoad?.status
   const max = status?.limits.maxMessageChars ?? 1000
   const busy = pending !== null
-  const listening = recognition.state === 'listening'
   const count = messages?.length ?? 0
 
   const card = (i: CommandItem) => (
-    <CommandCard key={i.id} item={i} voiceMode={mode === 'voice'}
+    <CommandCard key={i.id} item={i}
       onDevice={(d) => patchItem(i.id, (x) => ({ ...x, deviceId: d }))}
       onConfirm={() => void confirm(i.id)} onCancel={() => cancelItem(i.id)} />
   )
@@ -343,15 +312,7 @@ export default function Assistant() {
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Assistant</h1>
-            <p className="mt-1.5 text-sm text-slate-400">Ask about your home by typing or by voice.</p>
-          </div>
-          <div role="radiogroup" aria-label="Input mode" className="inline-flex rounded-xl bg-slate-800 p-1 text-sm">
-            {(['text', 'voice'] as const).map((m) => (
-              <button key={m} type="button" role="radio" aria-checked={mode === m} onClick={() => setMode(m)}
-                className={`rounded-lg px-5 py-1.5 font-medium transition-colors ${mode === m ? 'bg-indigo-400 text-slate-950' : 'text-slate-300 hover:text-slate-100'}`}>
-                {m === 'text' ? 'Text' : 'Voice'}
-              </button>
-            ))}
+            <p className="mt-1.5 text-sm text-slate-400">Ask about your home.</p>
           </div>
         </div>
 
@@ -423,12 +384,12 @@ export default function Assistant() {
               {threadError && <p className="rounded bg-red-500/10 p-2 text-sm text-red-400">{threadError}</p>}
               {!loadingThread && count === 0 && shownItems.length === 0 && pending === null && (
                 <div className="py-4">
-                  <p className="text-lg font-semibold">{mode === 'voice' ? 'Tap the microphone and say, for example:' : 'What would you like to know?'}</p>
-                  {mode !== 'voice' && <p className="mt-1 text-sm text-slate-400">Try one of these:</p>}
+                  <p className="text-lg font-semibold">What would you like to know?</p>
+                  <p className="mt-1 text-sm text-slate-400">Try one of these:</p>
                   <ul className="mt-4 grid gap-3 sm:grid-cols-2">
-                    {(mode === 'voice' ? VOICE_EXAMPLES : EXAMPLES).map((ex) => (
+                    {EXAMPLES.map((ex) => (
                       <li key={ex}>
-                        <button type="button" onClick={() => void submit(ex, false)}
+                        <button type="button" onClick={() => void submit(ex)}
                           className="flex h-full w-full items-start gap-3 rounded-2xl bg-slate-900/60 p-4 text-left text-sm text-slate-200 transition hover:-translate-y-0.5 hover:bg-slate-700">
                           <ChatIcon aria-hidden="true" width={18} height={18} className="mt-0.5 shrink-0 text-indigo-400" />
                           <span>{ex}</span>
@@ -441,7 +402,9 @@ export default function Assistant() {
               {messages?.map((m, idx) => (
                 <Fragment key={m.id}>
                   {shownItems.filter((i) => i.afterIndex === idx).map(card)}
-                  <ChatMessageView message={m} onSuggestionChange={changeSuggestion} />
+                  <ChatMessageView message={m} onSuggestionChange={changeSuggestion} latest={idx === count - 1 && pending === null}
+                  onFollowUp={(q) => void submit(q)} onAction={(a) => void reviewAction(a)}
+                  onReadAloud={tts.supported ? (text) => tts.speak(text) : undefined} />
                 </Fragment>
               ))}
               {shownItems.filter((i) => i.afterIndex >= count).map(card)}
@@ -452,65 +415,34 @@ export default function Assistant() {
                     <span aria-hidden="true" className="flex gap-1">
                       {[0, 1, 2].map((i) => <span key={i} className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-400" style={{ animationDelay: `${i * 120}ms` }} />)}
                     </span>
-                    Searching your records and thinking...
+                    {progress ? `${progress}...` : 'Searching your records and thinking...'}
                   </p>
                 </>
               )}
               <div ref={endRef} />
             </div>
 
-            {mode === 'voice' && (
-              <VoicePanel
-                recognitionSupported={recognition.supported}
-                listenState={recognition.state}
-                transcript={recognition.interim}
-                listenError={recognition.error}
-                busy={busy}
-                onMic={toggleMic}
-                ttsSupported={tts.supported}
-                speaking={tts.speaking}
-                muted={tts.muted}
-                onMuted={tts.setMuted}
-                onStopSpeaking={tts.stop}
-                voices={tts.voices}
-                voiceURI={tts.voiceURI}
-                onVoice={tts.setVoiceURI}
-                lastAnswer={lastAnswer}
-                onReplay={() => lastAnswer && tts.speak(lastAnswer.content)}
-              />
-            )}
 
-            {mode === 'text' && tts.speaking && (
+            {tts.speaking && (
               <p className="flex items-center justify-between rounded bg-slate-900 px-3 py-2 text-sm text-slate-300" role="status">
                 Speaking... <button type="button" onClick={tts.stop} className="rounded-md bg-slate-700 px-2 py-1 text-xs hover:bg-slate-600">Stop speaking</button>
               </p>
             )}
 
             {error && <p className="rounded bg-red-500/10 p-2 text-sm text-red-400" role="alert">{error}</p>}
-            {mode === 'text' && recognition.error && <p className="rounded bg-red-500/10 p-2 text-sm text-red-400" role="alert">{recognition.error}</p>}
 
-            <form onSubmit={(e) => { e.preventDefault(); void submit(input, false) }} className="flex items-end gap-2 border-t border-slate-700/60 pt-4">
+            <form onSubmit={(e) => { e.preventDefault(); void submit(input) }} className="flex items-end gap-2 border-t border-slate-700/60 pt-4">
               <label className="flex-1 text-xs text-slate-400">
                 <span className="sr-only">Your question</span>
-                <textarea id="assistant-input" aria-label="Your question" value={input} onChange={(e) => setInput(e.target.value)} maxLength={max} rows={mode === 'voice' ? 1 : 2}
-                  placeholder={mode === 'voice' ? 'Or type here...' : listening ? 'Listening...' : 'Ask about your devices...'}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(input, false) } }}
+                <textarea id="assistant-input" aria-label="Your question" value={input} onChange={(e) => setInput(e.target.value)} maxLength={max} rows={2}
+                  placeholder="Ask about your devices..."
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(input) } }}
                   className="w-full resize-none rounded-2xl border border-slate-600 bg-slate-900 px-4 py-3 text-[15px] text-slate-100 placeholder:text-slate-500" />
-                {mode === 'text' && listening && recognition.interim && (
-                  <span className="block truncate text-slate-300" data-testid="dictation-preview">Hearing: “{recognition.interim}”</span>
-                )}
                 <span className="mt-0.5 block text-right">{input.length}/{max}</span>
               </label>
-              {mode === 'text' && recognition.supported && (
-                <button type="button" onClick={toggleMic} disabled={busy && !listening} aria-pressed={listening}
-                  aria-label={listening ? 'Stop dictation' : 'Dictate with the microphone'}
-                  className={`mb-5 rounded-xl px-4 py-3 text-sm font-medium disabled:opacity-60 ${listening ? 'mic-live bg-red-500/80 hover:bg-red-500' : 'btn-secondary'}`}>
-                  {listening ? 'Stop' : 'Mic'}
-                </button>
-              )}
               <button type="submit" disabled={busy || input.trim() === ''}
                 className="btn-primary mb-5 rounded-xl px-6 py-3 text-sm disabled:opacity-60">
-                {busy ? 'Asking...' : mode === 'voice' ? 'Send' : 'Ask'}
+                {busy ? 'Asking...' : 'Ask'}
               </button>
             </form>
           </section>

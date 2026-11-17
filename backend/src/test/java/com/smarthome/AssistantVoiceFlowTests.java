@@ -98,7 +98,7 @@ class AssistantVoiceFlowTests extends AssistantTestBase {
 		String context = llm.lastCall().lastUserMessage();
 		Matcher first = Pattern.compile("\\[S1\\] \\(([A-Z_]+),").matcher(context);
 		assertTrue(first.find());
-		assertEquals("DEVICE_STATUS", first.group(1), "the device status (latest reading) is the first source");
+		assertEquals("LIVE_DATA", first.group(1), "a live database query of the latest reading is the first source");
 		assertTrue(context.contains("temperature 26.8"));
 		assertEquals(0, r.get("assistantMessage").get("warnings").size(), r.get("assistantMessage").get("warnings").toString());
 	}

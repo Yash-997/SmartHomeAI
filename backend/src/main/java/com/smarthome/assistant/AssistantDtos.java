@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+import com.smarthome.analytics.Visual;
 import com.smarthome.automation.AutomationDtos.RuleRequest;
 
 import jakarta.validation.constraints.NotBlank;
@@ -29,7 +30,28 @@ public final class AssistantDtos {
 		RETRIEVAL_UNAVAILABLE
 	}
 
-	public record ChatRequest(UUID conversationId, @NotBlank @Size(max = 4000) String message) {
+	/** {@code timeZone}: the browser's IANA zone, used for "today", "yesterday" and times in answers; blank = server default. */
+	public record ChatRequest(UUID conversationId, @NotBlank @Size(max = 4000) String message, @Size(max = 50) String timeZone) {
+		public ChatRequest(UUID conversationId, String message) {
+			this(conversationId, message, null);
+		}
+	}
+
+	/** A database query the assistant ran for an answer (shown under it as "data used"). */
+	public record ToolUseDto(String tool, String arguments, boolean ok, String error) {
+	}
+
+	/** A device command waiting for the user's confirmation. Nothing has been sent. */
+	public record ActionDto(UUID deviceId, String deviceName, String action, String value, String description) {
+	}
+
+	/**
+	 * What comes with an answer besides its text. {@code safety} is set by the gas-alert system (never by the model) when
+	 * a gas incident is active.
+	 */
+	public record ExtrasDto(List<Visual> visuals, List<ActionDto> actions, List<UUID> reports, List<String> followUps, String safety,
+			List<ToolUseDto> tools) {
+		public static final ExtrasDto NONE = new ExtrasDto(List.of(), List.of(), List.of(), List.of(), null, List.of());
 	}
 
 	/** A reference shown under an answer. {@code cited} = the answer pointed at it. {@code snippet} is the stored text, shortened. */
@@ -45,7 +67,7 @@ public final class AssistantDtos {
 	}
 
 	public record MessageDto(UUID id, String role, String content, AnswerStatus status, List<SourceDto> sources, List<String> warnings,
-			List<SuggestionDto> suggestions, Instant createdAt) {
+			List<SuggestionDto> suggestions, Instant createdAt, ExtrasDto extras) {
 	}
 
 	public record ChatResponse(UUID conversationId, String conversationTitle, MessageDto userMessage, MessageDto assistantMessage) {
