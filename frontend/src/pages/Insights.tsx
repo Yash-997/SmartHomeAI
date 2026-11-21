@@ -116,7 +116,7 @@ export default function Insights() {
                   </PanelBoundary>
                 </Disclosure>
                 <Disclosure title="Synthetic demonstration model" hint="Generated data used only to demonstrate the pipeline. Never your home's real data."
-                  badge={<span className="rounded bg-violet-500/25 px-1.5 py-0.5 text-[11px] font-semibold tracking-wide text-violet-200">SYNTHETIC</span>}>
+                  badge={<span className="rounded bg-indigo-900 px-1.5 py-0.5 text-[11px] font-semibold tracking-wide text-indigo-600 ring-1 ring-inset ring-line">SYNTHETIC</span>}>
                   <PanelBoundary title="Synthetic demonstration">
                     <SyntheticPanel key={`s-${deviceId}`} deviceId={deviceId} />
                   </PanelBoundary>

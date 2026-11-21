@@ -66,6 +66,17 @@ public class MlAnomaly {
 	@Column(name = "resolution_note", length = 200)
 	private String resolutionNote;
 
+	// Email delivery. Read-only here: the scanner saves this entity while the alert worker may be sending, so these
+	// columns are written only by the targeted updates in MlAnomalyRepository and never overwritten by an entity save.
+	@Column(name = "email_status", length = 8, insertable = false, updatable = false)
+	private String emailStatus;
+
+	@Column(name = "email_at", insertable = false, updatable = false)
+	private Instant emailAt;
+
+	@Column(name = "email_error", length = 200, insertable = false, updatable = false)
+	private String emailError;
+
 	protected MlAnomaly() {
 	}
 
@@ -125,4 +136,7 @@ public class MlAnomaly {
 	public Instant getReadingAt() { return readingAt; }
 	public Instant getResolvedAt() { return resolvedAt; }
 	public String getResolutionNote() { return resolutionNote; }
+	public String getEmailStatus() { return emailStatus; }
+	public Instant getEmailAt() { return emailAt; }
+	public String getEmailError() { return emailError; }
 }

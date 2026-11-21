@@ -102,17 +102,23 @@ public class AnalyticsRepository {
 
 	// ---- events ----------------------------------------------------------------------------------
 
+	/**
+	 * {@code details} is the detector's JSON (the numbers behind the explanation); {@code deviceId} is the hardware id;
+	 * {@code emailStatus} is null when no email was due.
+	 */
 	public record AnomalyRow(UUID id, UUID device, String deviceName, String kind, String scope, String severity, String status, String explanation,
-			Instant detectedAt, Instant lastSeenAt, int occurrences) {
+			Instant detectedAt, Instant lastSeenAt, int occurrences, String deviceId, String details, String emailStatus) {
 	}
 
 	/** Anomalies that were active at some point in [from, to), newest first. */
 	public List<AnomalyRow> anomalies(UUID owner, UUID deviceOrNull, Instant from, Instant to, int limit) {
-		String sql = "select a.id, a.device_uuid, d.name, a.kind, a.scope, a.severity, a.status, a.explanation, a.detected_at, a.last_seen_at, a.occurrences "
+		String sql = "select a.id, a.device_uuid, d.name, a.kind, a.scope, a.severity, a.status, a.explanation, a.detected_at, a.last_seen_at, a.occurrences, "
+				+ "d.device_id, a.details, a.email_status "
 				+ "from ml_anomalies a join devices d on d.id = a.device_uuid where d.owner_user_id = ? and a.last_seen_at >= ? and a.detected_at < ?"
 				+ (deviceOrNull == null ? "" : " and a.device_uuid = ?") + " order by a.last_seen_at desc limit ?";
 		return jdbc.query(sql, (rs, i) -> new AnomalyRow(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4),
-				rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8), inst(rs, 9), inst(rs, 10), rs.getInt(11)),
+				rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8), inst(rs, 9), inst(rs, 10), rs.getInt(11), rs.getString(12),
+				rs.getString(13), rs.getString(14)),
 				args(owner, deviceOrNull, from, to, cap(limit)));
 	}
 

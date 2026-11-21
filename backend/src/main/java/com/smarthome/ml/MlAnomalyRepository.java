@@ -11,6 +11,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 public interface MlAnomalyRepository extends JpaRepository<MlAnomaly, UUID> {
 
@@ -38,4 +39,24 @@ public interface MlAnomalyRepository extends JpaRepository<MlAnomaly, UUID> {
 	@Modifying
 	@Query("delete from MlAnomaly a where a.deviceUuid = :device")
 	int deleteAllForDevice(@Param("device") UUID device);
+
+	// ---- email delivery (only these write the email columns) ----
+
+	/** Marks the anomaly PENDING if no email was handled for it yet. Returns 0 if it already was: never a second email. */
+	@Transactional
+	@Modifying(clearAutomatically = true)
+	@Query("update MlAnomaly a set a.emailStatus = 'PENDING', a.emailAt = :at where a.id = :id and a.emailStatus is null")
+	int claimEmail(@Param("id") UUID id, @Param("at") Instant at);
+
+	@Transactional
+	@Modifying(clearAutomatically = true)
+	@Query("update MlAnomaly a set a.emailStatus = :status, a.emailAt = :at, a.emailError = :error where a.id = :id")
+	int recordEmail(@Param("id") UUID id, @Param("status") String status, @Param("at") Instant at, @Param("error") String error);
+
+	/** Was the same problem (device, kind, sensor) emailed successfully since {@code since}? Drives the cooldown. */
+	boolean existsByDeviceUuidAndKindAndScopeAndEmailStatusAndEmailAtAfterAndIdNot(UUID deviceUuid, AnomalyKind kind, String scope,
+			String emailStatus, Instant since, UUID id);
+
+	/** Anomalies of these devices that have an email status, newest first (the owner's email history). */
+	List<MlAnomaly> findByDeviceUuidInAndEmailStatusIsNotNullOrderByDetectedAtDesc(Collection<UUID> devices, Pageable page);
 }

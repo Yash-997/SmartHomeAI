@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, ApiError, type Anomaly } from '../api'
 import { ANOMALY_STATUS, KIND, SEVERITY, detailPairs, isActive } from '../insights'
+import { Delivery } from './GasAlertsPanel'
 
 type Result = { key: string; items?: Anomaly[]; error?: string }
 
@@ -40,6 +41,11 @@ function AnomalyCard({ deviceId, a, onChanged }: { deviceId: string; a: Anomaly;
         {a.resolvedAt ? ` · closed ${new Date(a.resolvedAt).toLocaleString()}` : ''}
       </p>
       {a.resolutionNote && <p className="mt-1 text-xs text-slate-400">Note: {a.resolutionNote}</p>}
+      {a.emailStatus && (
+        <p className="mt-1 text-xs">
+          <Delivery label="Email" status={a.emailStatus} at={a.emailAt ?? null} error={a.emailError ?? null} />
+        </p>
+      )}
 
       {pairs.length > 0 && (
         <div className="mt-2">

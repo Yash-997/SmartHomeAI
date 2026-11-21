@@ -22,11 +22,11 @@ function describeFailure(e: unknown, fallback: string): string {
 }
 
 function SyntheticBadge() {
-  return <span className="rounded bg-violet-500/25 px-1.5 py-0.5 text-[11px] font-semibold tracking-wide text-violet-200">SYNTHETIC</span>
+  return <span className="rounded bg-indigo-900 px-1.5 py-0.5 text-[11px] font-semibold tracking-wide text-indigo-600 ring-1 ring-inset ring-line">SYNTHETIC</span>
 }
 
 /**
- * The demonstration pipeline on GENERATED data. Kept visually apart from the real panels (violet, labelled SYNTHETIC
+ * The demonstration pipeline on GENERATED data. Kept visually apart from the real panels (burgundy badges and banner, labelled SYNTHETIC
  * everywhere) so its numbers are never mistaken for what the model learned about this home.
  */
 export default function SyntheticPanel({ deviceId }: { deviceId: string }) {
@@ -77,12 +77,12 @@ export default function SyntheticPanel({ deviceId }: { deviceId: string }) {
   const t = s?.training
 
   return (
-    <section className="rounded-xl border border-violet-500/40 bg-slate-800 p-5 shadow-lg" aria-labelledby="synthetic-heading">
+    <section className="rounded-xl border border-slate-700 bg-slate-800 p-5 shadow-lg" aria-labelledby="synthetic-heading">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 id="synthetic-heading" className="font-semibold">Synthetic demonstration model</h3>
         <SyntheticBadge />
       </div>
-      <p className="mt-2 rounded bg-violet-500/10 p-2 text-xs text-violet-100" role="note">
+      <p className="mt-2 rounded bg-indigo-900 p-2 text-xs text-indigo-600 ring-1 ring-inset ring-line" role="note">
         {s?.notice ?? 'Generated data, used only to exercise the ML pipeline. It is not your home\'s history and nothing here describes your routine.'}
       </p>
 
@@ -112,13 +112,13 @@ export default function SyntheticPanel({ deviceId }: { deviceId: string }) {
             <div className="mt-3 flex flex-wrap gap-2">
               {!ds && (
                 <button type="button" onClick={() => run('generate')} disabled={busy !== ''}
-                  className="rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-60">
+                  className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60">
                   {busy === 'generate' ? 'Generating...' : 'Generate 30-day synthetic dataset'}
                 </button>
               )}
               {ds && (
                 <button type="button" onClick={() => run('train')} disabled={busy !== ''}
-                  className="rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-60">
+                  className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60">
                   {busy === 'train' ? 'Training...' : s.model ? 'Retrain on synthetic data' : 'Train on synthetic data'}
                 </button>
               )}
@@ -168,7 +168,7 @@ export default function SyntheticPanel({ deviceId }: { deviceId: string }) {
                   <p className="text-xs text-slate-400">Synthetic forecast, next 24 hours ({shownForecast.timeZone}): chance of motion in the <em>simulated</em> household</p>
                   <div className="mt-1 flex h-16 items-end gap-0.5" role="img" aria-label="Synthetic model forecast for the next 24 hours">
                     {shownForecast.points.map((p) => (
-                      <div key={p.at} className="flex-1 rounded-t-sm bg-violet-400/70" style={{ height: `${Math.max(3, p.probability * 100)}%` }}
+                      <div key={p.at} className={`flex-1 rounded-t-sm ${p.probability >= 0.5 ? 'bg-indigo-600' : p.probability >= 0.2 ? 'bg-indigo-500' : 'bg-indigo-700'} hover:bg-indigo-200!`} style={{ height: `${Math.max(3, p.probability * 100)}%` }}
                         title={`${p.dayOfWeek} ${String(p.hour).padStart(2, '0')}:00 · ${pct(p.probability)} (synthetic)`} />
                     ))}
                   </div>

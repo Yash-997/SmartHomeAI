@@ -32,6 +32,7 @@ public final class AlertEmailTemplates {
 	private static final Theme GAS = new Theme("#B91C1C", "#FFFFFF", "#EA580C", "#FFF7ED", "#FDBA74", "#FEE2E2", "#991B1B");
 	private static final Theme RESOLVED = new Theme("#15803D", "#FFFFFF", "#16A34A", "#F0FDF4", "#86EFAC", "#DCFCE7", "#166534");
 	private static final Theme SECURITY = new Theme("#1E1B4B", "#FFFFFF", "#6366F1", "#EEF2FF", "#A5B4FC", "#FEF3C7", "#92400E");
+	private static final Theme WARNING = new Theme("#B45309", "#FFFFFF", "#F59E0B", "#FFFBEB", "#FCD34D", "#FEF3C7", "#92400E");
 	private static final Theme NEUTRAL = new Theme("#0F172A", "#FFFFFF", "#6366F1", "#F8FAFC", "#CBD5E1", "#E2E8F0", "#334155");
 
 	private static final String ADC_UNIT = "raw ADC (0-4095)";
@@ -176,6 +177,79 @@ public final class AlertEmailTemplates {
 			text.append("\nReview the event: ").append(link).append("\n");
 		}
 		text.append("\nYou get one email per motion episode; the event stays open in your dashboard until you acknowledge it.\n");
+		return new EmailContent(subject, text.toString(), html.toString());
+	}
+
+	/**
+	 * What an anomaly email needs: the same facts the report shows for the anomaly ({@code value} and {@code expected} come
+	 * from {@link com.smarthome.ml.AnomalyFacts}).
+	 */
+	public record AnomalyDetails(UUID anomalyId, String deviceName, String deviceId, String kind, String sensor, String severity,
+			String value, String expected, String description, Instant detectedAt, int occurrences) {
+	}
+
+	public static EmailContent anomalyAlert(AnomalyDetails a, AlertProperties p, int cooldownMinutes) {
+		String device = clean(a.deviceName());
+		String severity = a.severity() == null ? "WARNING" : a.severity();
+		Theme theme = switch (severity) {
+			case "CRITICAL" -> GAS;
+			case "INFO" -> NEUTRAL;
+			default -> WARNING;
+		};
+		String ref = a.anomalyId().toString().substring(0, 8).toUpperCase(Locale.ROOT);
+		List<String[]> rows = new ArrayList<>(List.of(
+				row("Device", device),
+				row("Sensor", clean(a.sensor())),
+				row("Anomaly", clean(a.kind())),
+				row("Abnormal value", a.value() == null ? "-" : a.value()),
+				row("Expected range", a.expected() == null ? "-" : a.expected()),
+				row("Severity", severity),
+				row("Detected", time(a.detectedAt(), p.zone())),
+				row("Anomaly reference", ref)));
+		if (a.deviceId() != null && !a.deviceId().isBlank()) {
+			rows.add(1, row("Device ID", clean(a.deviceId())));
+		}
+		String description = a.description() == null ? "" : a.description().replaceAll("\\p{Cntrl}", " ").trim();
+		List<String> actions = List.of(
+				"Open the Insights page and look at the readings around the detection time.",
+				"Check the sensor and its wiring, or what happened in the room.",
+				"Acknowledge the anomaly once you know the cause, or dismiss it as a false alarm.");
+		String dash = p.dashboardBase();
+		String link = dash == null ? null : dash + "/insights";
+
+		String subject = (severity.equals("CRITICAL") ? "CRITICAL ANOMALY: " : "Anomaly detected: ") + device + ", " + clean(a.sensor());
+		StringBuilder html = new StringBuilder();
+		html.append(open("An unusual " + clean(a.sensor()).toLowerCase(Locale.ROOT) + " reading was detected on " + device + ".", theme));
+		html.append(band(theme, "SmartHomeAI Anomaly Detection", "ANOMALY DETECTED",
+				"<strong>" + esc(device) + "</strong> reported something unusual: " + esc(clean(a.kind()).toLowerCase(Locale.ROOT)) + " on "
+						+ esc(clean(a.sensor()).toLowerCase(Locale.ROOT)) + "."));
+		html.append(statusStrip(theme, severity, "Anomaly recorded in your history", a.occurrences() > 1 ? "seen " + a.occurrences() + " times" : ""));
+		html.append(section(details(rows, theme)));
+		if (!description.isEmpty()) {
+			html.append(section(callout(theme, "What was found", List.of(description), false)));
+		}
+		html.append(section(callout(theme, "What to do", actions, true)));
+		if (link != null) {
+			html.append(section(button(theme.accent(), "Review it in SmartHomeAI", link)));
+		}
+		html.append(section(note("You get one email per anomaly. While it stays open, further readings only update it, and the same "
+				+ "problem on this device is not emailed again for " + cooldownMinutes + " minutes. Anomaly detection is advisory; the "
+				+ "device's own gas warning works independently of it.")));
+		html.append(close("You receive this because you own the device \"" + device + "\" in your SmartHomeAI account.", p));
+
+		StringBuilder text = new StringBuilder("ANOMALY DETECTED - SmartHomeAI\n\n");
+		text.append("\"").append(device).append("\" reported something unusual.\n\n");
+		textRows(text, rows);
+		if (!description.isEmpty()) {
+			text.append("\nWHAT WAS FOUND\n").append(description).append('\n');
+		}
+		text.append("\nWHAT TO DO\n");
+		textList(text, actions, true);
+		if (link != null) {
+			text.append("\nReview it: ").append(link).append("\n");
+		}
+		text.append("\nOne email per anomaly; the same problem on this device is not emailed again for ").append(cooldownMinutes)
+				.append(" minutes.\n");
 		return new EmailContent(subject, text.toString(), html.toString());
 	}
 

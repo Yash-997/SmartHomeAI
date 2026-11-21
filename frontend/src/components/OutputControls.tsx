@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { AnimatePresence, m } from 'motion/react'
-import { api, ApiError, type Command, type CommandStatus, type Device, type OutputSpec } from '../api'
+import { api, ApiError, manualOutputs, type Command, type CommandStatus, type Device, type OutputSpec } from '../api'
 import { formatAge, liveStatus } from '../telemetry'
 import { ChevronDownIcon } from '../ui/icons'
 
@@ -60,7 +60,8 @@ export default function OutputControls({
     }
   }
 
-  if (device.outputs.length === 0) return null
+  const outputs = manualOutputs(device.outputs)
+  if (outputs.length === 0) return null
 
   return (
     <div className="mt-5">
@@ -79,7 +80,7 @@ export default function OutputControls({
       )}
 
       <ul className="mt-3 space-y-3">
-        {device.outputs.map((o) => {
+        {outputs.map((o) => {
           const rep = reported(device, o.action)
           return (
             <li key={o.action} className="rounded-xl bg-slate-900/60 p-3">
@@ -118,11 +119,6 @@ export default function OutputControls({
                   )
                 })}
               </div>
-              {o.action === 'set_gas_led' && (
-                <p className="mt-1 text-[11px] text-slate-500">
-                  Lights automatically on a gas warning. It can be forced on, but never turned off remotely.
-                </p>
-              )}
             </li>
           )
         })}

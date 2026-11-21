@@ -10,6 +10,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +38,7 @@ import tools.jackson.databind.ObjectMapper;
 @Service
 public class AnomalyService {
 
+	private static final Logger log = LoggerFactory.getLogger(AnomalyService.class);
 	private static final Set<AnomalyStatus> ACTIVE = EnumSet.of(AnomalyStatus.OPEN, AnomalyStatus.ACKNOWLEDGED);
 	/** An out-of-range problem that keeps recurring is escalated to CRITICAL after this many occurrences. */
 	static final int ESCALATE_AFTER = 5;
@@ -46,13 +50,16 @@ public class AnomalyService {
 	private final ObjectMapper mapper;
 	private final Clock clock;
 	private final ReentrantLock[] locks = new ReentrantLock[LOCK_STRIPES];
+	private final ApplicationEventPublisher events;
 
-	public AnomalyService(MlAnomalyRepository anomalies, DeviceService deviceService, MlProperties props, ObjectMapper mapper, Clock clock) {
+	public AnomalyService(MlAnomalyRepository anomalies, DeviceService deviceService, MlProperties props, ObjectMapper mapper, Clock clock,
+			ApplicationEventPublisher events) {
 		this.anomalies = anomalies;
 		this.deviceService = deviceService;
 		this.props = props;
 		this.mapper = mapper;
 		this.clock = clock;
+		this.events = events;
 		for (int i = 0; i < LOCK_STRIPES; i++) {
 			locks[i] = new ReentrantLock();
 		}
@@ -80,19 +87,38 @@ public class AnomalyService {
 		Optional<MlAnomaly> open = anomalies.findFirstByDeviceUuidAndKindAndScopeAndStatusInOrderByLastSeenAtDesc(deviceUuid, f.kind(), f.scope(), ACTIVE);
 		if (open.isPresent()) {
 			MlAnomaly a = open.get();
+			AnomalySeverity before = a.getSeverity();
 			AnomalySeverity severity = f.severity();
 			if (f.kind() == AnomalyKind.OUT_OF_RANGE && a.getOccurrences() + 1 >= ESCALATE_AFTER) {
 				severity = AnomalySeverity.CRITICAL;
 			}
 			a.seenAgain(severity, f.explanation(), details, f.readingAt(), now);
-			return Optional.of(anomalies.save(a));
+			MlAnomaly saved = anomalies.save(a);
+			if (saved.getSeverity().ordinal() > before.ordinal()) {
+				published(saved, false);              // got worse: may now reach the email severity
+			}
+			return Optional.of(saved);
 		}
 		Optional<MlAnomaly> dismissed = anomalies.findFirstByDeviceUuidAndKindAndScopeAndStatusOrderByResolvedAtDesc(deviceUuid, f.kind(), f.scope(), AnomalyStatus.DISMISSED);
 		if (dismissed.isPresent() && dismissed.get().getResolvedAt() != null
 				&& dismissed.get().getResolvedAt().isAfter(now.minus(props.anomaly().suppressAfterDismissMinutes(), ChronoUnit.MINUTES))) {
 			return Optional.empty();
 		}
-		return Optional.of(anomalies.save(new MlAnomaly(deviceUuid, f.kind(), f.scope(), f.severity(), f.explanation(), details, f.readingAt(), now)));
+		MlAnomaly saved = anomalies.save(new MlAnomaly(deviceUuid, f.kind(), f.scope(), f.severity(), f.explanation(), details, f.readingAt(), now));
+		published(saved, true);
+		return Optional.of(saved);
+	}
+
+	/**
+	 * Tells listeners (the anomaly email) that this anomaly was just recorded or got worse. The row is already saved, so
+	 * the history never depends on a listener; a failing listener is logged and ignored, detection carries on.
+	 */
+	private void published(MlAnomaly a, boolean isNew) {
+		try {
+			events.publishEvent(new AnomalyRaisedEvent(a.getId(), a.getDeviceUuid(), a.getSeverity(), isNew));
+		} catch (RuntimeException e) {
+			log.warn("Anomaly notification could not be queued: {}", e.getClass().getSimpleName());
+		}
 	}
 
 	/** Reading refused by the ingest path because it was outside the accepted range. */
@@ -195,6 +221,7 @@ public class AnomalyService {
 			// leave details out rather than fail the whole list
 		}
 		return new AnomalyResponse(a.getId(), a.getKind(), a.getScope(), a.getSeverity(), a.getStatus(), a.getExplanation(), details,
-				a.getDetectedAt(), a.getLastSeenAt(), a.getOccurrences(), a.getReadingAt(), a.getResolvedAt(), a.getResolutionNote());
+				a.getDetectedAt(), a.getLastSeenAt(), a.getOccurrences(), a.getReadingAt(), a.getResolvedAt(), a.getResolutionNote(),
+				a.getEmailStatus(), a.getEmailAt(), a.getEmailError());
 	}
 }

@@ -105,6 +105,15 @@ export interface OutputSpec {
   values: string[]
 }
 
+/**
+ * Outputs offered as manual buttons on the device pages. The gas warning LED is left out: it is driven by the
+ * device's own gas logic, so switching it by hand is not meaningful. (Automation, voice and the assistant are
+ * unchanged, and the firmware still lights it on every gas warning.)
+ */
+export function manualOutputs(outputs: OutputSpec[]): OutputSpec[] {
+  return outputs.filter((o) => o.action !== 'set_gas_led')
+}
+
 export interface LedState {
   mode: string
   on: boolean
@@ -410,6 +419,10 @@ export interface Anomaly {
   readingAt: string | null
   resolvedAt: string | null
   resolutionNote: string | null
+  /** Null when no email was due (below the email severity, or anomaly emails are off). */
+  emailStatus?: EmailDelivery | null
+  emailAt?: string | null
+  emailError?: string | null
 }
 
 export interface MlStatus {
@@ -779,6 +792,34 @@ export interface GasAlert {
   recoveryEmailError: string | null
 }
 
+// ---- anomaly email alerts ----
+export interface AnomalyEmailConfig {
+  enabled: boolean
+  mailConfigured: boolean
+  minSeverity: AnomalySeverity
+  cooldownMinutes: number
+  /** Masked, e.g. "y***@gmail.com"; null when the account has no email. */
+  recipient: string | null
+}
+/** One anomaly and its email: the same facts as the email and the report. */
+export interface AnomalyEmail {
+  id: string
+  deviceUuid: string
+  deviceName: string
+  deviceId: string
+  kind: AnomalyKind
+  sensor: string
+  severity: AnomalySeverity
+  status: AnomalyStatus
+  value: string
+  expected: string
+  description: string
+  detectedAt: string
+  emailStatus: EmailDelivery
+  emailAt: string | null
+  emailError: string | null
+}
+
 // ---- digital twin ----
 export type SyncState = 'NO_DESIRED' | 'IN_SYNC' | 'PENDING' | 'DRIFT' | 'UNREPORTED' | 'UNKNOWN'
 export interface OutputTwin {
@@ -868,6 +909,8 @@ export const api = {
   acknowledgeEvent: (id: string) => request<SecurityEvent>(`/api/security/events/${id}/acknowledge`, { method: 'POST' }, true),
   gasAlertConfig: () => request<GasAlertConfig>('/api/alerts/gas/config', {}, true),
   gasAlerts: (limit = 20) => request<GasAlert[]>(`/api/alerts/gas?limit=${limit}`, {}, true),
+  anomalyEmailConfig: () => request<AnomalyEmailConfig>('/api/alerts/anomaly/config', {}, true),
+  anomalyEmails: (limit = 20) => request<AnomalyEmail[]>(`/api/alerts/anomaly?limit=${limit}`, {}, true),
   acknowledgeAllEvents: () => request<{ acknowledged: number }>('/api/security/events/acknowledge-all', { method: 'POST' }, true),
   twins: () => request<Twin[]>('/api/twins', {}, true),
   recommendations: () => request<RecommendationList>('/api/recommendations', {}, true),

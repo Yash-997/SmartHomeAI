@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, ApiError, type Connection, type Device, type OutputSpec } from '../api'
+import { api, ApiError, manualOutputs, type Connection, type Device, type OutputSpec } from '../api'
 import { formatAge, liveStatus } from '../telemetry'
 import { ChevronRightIcon, PlusIcon } from '../ui/icons'
 import { notify } from '../ui/toastStore'
@@ -69,9 +69,9 @@ function Row({ device, elapsed, onChanged }: { device: Device; elapsed: number; 
           Details <ChevronRightIcon width={14} height={14} />
         </Link>
       </div>
-      {device.outputs.length > 0 && (
+      {manualOutputs(device.outputs).length > 0 && (
         <div className="mt-3 space-y-2 rounded-lg bg-slate-900 p-3">
-          {device.outputs.map((o) => (
+          {manualOutputs(device.outputs).map((o) => (
             <Segmented key={o.action} device={device} output={o} disabled={!online || busy} onSend={send} />
           ))}
           {!online && <p className="text-xs text-slate-500">Controls need the device to be online.</p>}

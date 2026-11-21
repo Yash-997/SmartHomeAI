@@ -102,7 +102,7 @@ public final class MlDtos {
 
 	public record AnomalyResponse(UUID id, AnomalyKind kind, String scope, AnomalySeverity severity, AnomalyStatus status,
 			String explanation, JsonNode details, Instant detectedAt, Instant lastSeenAt, int occurrences, Instant readingAt,
-			Instant resolvedAt, String resolutionNote) {
+			Instant resolvedAt, String resolutionNote, String emailStatus, Instant emailAt, String emailError) {
 	}
 
 	public record AnomalySummary(long active, long critical, long warning, long info, Instant lastScanAt) {

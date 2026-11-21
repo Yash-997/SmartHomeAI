@@ -9,7 +9,8 @@ const DELIVERY_TONE: Record<EmailDelivery, string> = {
   SKIPPED: 'bg-amber-500/20 text-amber-200',
 }
 
-function Delivery({ label, status, at, error }: { label: string; status: EmailDelivery | null; at: string | null; error: string | null }) {
+/** Email delivery chip, shared with the anomaly email panel so both look the same. */
+export function Delivery({ label, status, at, error }: { label: string; status: EmailDelivery | null; at: string | null; error: string | null }) {
   if (!status) return <span className="text-slate-500">{label}: not due yet</span>
   return (
     <span title={error ?? undefined}>

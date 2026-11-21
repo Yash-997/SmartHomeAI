@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useLocation } from 'react-router-dom'
+import AnomalyEmailPanel from '../components/AnomalyEmailPanel'
 import GasAlertsPanel from '../components/GasAlertsPanel'
 import HealthCard from '../components/HealthCard'
 import SensorReadingsPanel from '../components/SensorReadingsPanel'
@@ -25,6 +26,9 @@ export default function Diagnostics() {
       <TwinPanel />
       <div id="gas" className="scroll-mt-6">
         <GasAlertsPanel />
+      </div>
+      <div id="anomaly-alerts" className="scroll-mt-6">
+        <AnomalyEmailPanel />
       </div>
       <HealthCard />
     </Shell>

@@ -30,9 +30,13 @@ import com.smarthome.analytics.Visual.VisualSeries;
 import com.smarthome.assistant.Text;
 import com.smarthome.assistant.tools.Fmt;
 import com.smarthome.device.DeviceDtos.DeviceResponse;
+import com.smarthome.ml.AnomalyFacts;
 import com.smarthome.report.ReportDtos.Kpi;
 import com.smarthome.report.ReportDtos.ReportContent;
 import com.smarthome.report.ReportDtos.Section;
+
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Builds a report from the database. Everything in it is computed (SQL aggregates and fixed rules); no language model
@@ -45,12 +49,17 @@ public class ReportBuilder {
 	/** General indoor-comfort guidance used by the recommendations (not a medical or safety standard). */
 	static final double HUMID_HIGH = 60, HUMID_LOW = 30, TEMP_HIGH = 28, TEMP_LOW = 17;
 
+	/** How many anomaly descriptions are written out in full (the table lists every anomaly). */
+	static final int ANOMALY_DESCRIPTIONS = 15;
+
 	private final SensorAnalytics analytics;
 	private final AnalyticsRepository repo;
+	private final ObjectMapper mapper;
 
-	public ReportBuilder(SensorAnalytics analytics, AnalyticsRepository repo) {
+	public ReportBuilder(SensorAnalytics analytics, AnalyticsRepository repo, ObjectMapper mapper) {
 		this.analytics = analytics;
 		this.repo = repo;
+		this.mapper = mapper;
 	}
 
 	@Transactional(readOnly = true)
@@ -101,6 +110,9 @@ public class ReportBuilder {
 		}
 		exec.add(String.format(Locale.ROOT, "Motion was detected in %d of %d motion readings. There were %d anomalies (%d still unresolved), %d security events, %d gas incidents and %d times a device went offline.",
 				motion.detected(), motion.readings(), anomalies.size(), openAnomalies, security.values().stream().mapToLong(Long::longValue).sum(), gas.size(), offline));
+		if (!anomalies.isEmpty()) {
+			exec.add(history(anomalies));
+		}
 		sections.add(new Section("Executive summary", exec, List.of(), List.of()));
 
 		// 2. Sensor statistics
@@ -112,7 +124,8 @@ public class ReportBuilder {
 						ms.count() == 0 ? "-" : m.number(ms.min()), ms.count() == 0 ? "-" : m.number(ms.max()), Long.toString(ms.count())));
 			}
 		}
-		sections.add(new Section("Sensor statistics", List.of("Average, minimum and maximum of every stored value in the period, per device."),
+		sections.add(new Section("Sensor statistics", List.of("Average, minimum and maximum of every stored value in the period, per device. "
+				+ "Readings flagged as abnormal are listed separately under Anomalies."),
 				List.of(), rows.isEmpty() ? List.of() : List.of(Visual.table("Statistics", List.of("Device", "Sensor", "Average", "Min", "Max", "Values"), rows))));
 
 		// 3. Environmental analysis
@@ -178,12 +191,29 @@ public class ReportBuilder {
 		}
 		sections.add(new Section("Occupancy and security", List.of(), occ, occVisuals));
 
-		// 5. Anomalies
+		// 5. Anomalies: detected events, kept apart from the normal readings summarised above
 		List<List<String>> an = new ArrayList<>();
-		anomalies.forEach(a -> an.add(List.of(Text.oneLine(a.deviceName(), 40), a.kind(), a.scope(), a.severity(), a.status(), Fmt.time(a.lastSeenAt(), z))));
-		sections.add(new Section("Anomalies", List.of(anomalies.isEmpty() ? "No anomalies were active during this period."
-				: anomalies.size() + " anomalies were active during this period, " + openAnomalies + " of them still unresolved."), List.of(),
-				an.isEmpty() ? List.of() : List.of(Visual.table("Anomalies", List.of("Device", "Kind", "Sensor", "Severity", "Status", "Last seen"), an))));
+		List<String> described = new ArrayList<>();
+		for (AnomalyRow a : anomalies) {
+			JsonNode d = parse(a.details());
+			an.add(List.of(Fmt.time(a.detectedAt(), z), Text.oneLine(a.deviceName(), 40) + (a.deviceId() == null ? "" : " (" + Text.oneLine(a.deviceId(), 40) + ")"),
+					AnomalyFacts.sensor(a.scope()), AnomalyFacts.kind(a.kind()), AnomalyFacts.value(a.kind(), a.scope(), d),
+					AnomalyFacts.expected(a.kind(), a.scope(), d), a.severity(), status(a.status()), email(a.emailStatus())));
+			if (described.size() < ANOMALY_DESCRIPTIONS) {
+				described.add(Fmt.time(a.detectedAt(), z) + ", " + Text.oneLine(a.deviceName(), 40) + ", " + AnomalyFacts.sensor(a.scope()) + " ("
+						+ a.severity() + "): " + Text.oneLine(a.explanation(), 400));
+			}
+		}
+		List<String> anParagraphs = new ArrayList<>();
+		anParagraphs.add(anomalies.isEmpty() ? "No anomalies were active during this period."
+				: anomalies.size() + " anomalies were active during this period, " + openAnomalies + " of them still unresolved. " + history(anomalies));
+		if (!anomalies.isEmpty()) {
+			anParagraphs.add("These are anomaly events: individual readings or conditions the anomaly detector flagged as abnormal. They are listed "
+					+ "separately from the normal sensor statistics above. The expected range is the detector's own limit for that sensor at the time.");
+		}
+		sections.add(new Section("Anomalies", anParagraphs, described,
+				an.isEmpty() ? List.of() : List.of(Visual.table("Anomaly events",
+						List.of("Detected", "Device (ID)", "Sensor", "Anomaly", "Abnormal value", "Expected range", "Severity", "Status", "Email"), an))));
 
 		// 6. Devices and automation
 		List<String> dev = new ArrayList<>();
@@ -289,6 +319,51 @@ public class ReportBuilder {
 			out.add("No action needed: readings stayed within the usual ranges and no problems were recorded.");
 		}
 		return out;
+	}
+
+	/**
+	 * Anomaly history in one sentence: counts by severity, the most frequent kind and sensor, and how many were emailed.
+	 * Every figure is counted from the rows.
+	 */
+	static String history(List<AnomalyRow> anomalies) {
+		Map<String, Long> bySeverity = new java.util.LinkedHashMap<>();
+		for (String sev : List.of("CRITICAL", "WARNING", "INFO")) {
+			long n = anomalies.stream().filter(a -> sev.equals(a.severity())).count();
+			if (n > 0) {
+				bySeverity.put(sev.toLowerCase(Locale.ROOT), n);
+			}
+		}
+		Map<String, Long> byKind = anomalies.stream().collect(java.util.stream.Collectors.groupingBy(
+				a -> AnomalyFacts.kind(a.kind()).toLowerCase(Locale.ROOT) + " on " + AnomalyFacts.sensor(a.scope()).toLowerCase(Locale.ROOT),
+				java.util.stream.Collectors.counting()));
+		Map.Entry<String, Long> top = byKind.entrySet().stream().max(Map.Entry.<String, Long>comparingByValue().thenComparing(Map.Entry.comparingByKey())).orElse(null);
+		long emailed = anomalies.stream().filter(a -> "SENT".equals(a.emailStatus())).count();
+		long failed = anomalies.stream().filter(a -> "FAILED".equals(a.emailStatus())).count();
+		List<String> parts = new ArrayList<>();
+		bySeverity.forEach((k, v) -> parts.add(v + " " + k));
+		StringBuilder s = new StringBuilder("Anomaly history: ").append(String.join(", ", parts)).append('.');
+		if (top != null) {
+			s.append(" Most frequent: ").append(top.getKey()).append(" (").append(top.getValue()).append(").");
+		}
+		s.append(' ').append(emailed).append(emailed == 1 ? " anomaly was" : " anomalies were").append(" emailed to the owner");
+		s.append(failed > 0 ? ", " + failed + " email" + (failed == 1 ? "" : "s") + " failed." : ".");
+		return s.toString();
+	}
+
+	private static String status(String s) {
+		return s == null ? "-" : s.toLowerCase(Locale.ROOT).replace('_', ' ');
+	}
+
+	private static String email(String s) {
+		return s == null ? "not due" : s.toLowerCase(Locale.ROOT);
+	}
+
+	private JsonNode parse(String details) {
+		try {
+			return details == null ? null : mapper.readTree(details);
+		} catch (RuntimeException e) {
+			return null;
+		}
 	}
 
 	private static String scope(UUID deviceOrNull, Map<UUID, String> names) {

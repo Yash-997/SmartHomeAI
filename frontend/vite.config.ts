@@ -3,10 +3,15 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv, type ProxyOptions } from 'vite'
 
-/** True if something accepts TCP connections on localhost:port. */
+// Use IPv4 loopback, not "localhost": Node resolves "localhost" to ::1 first, and on Windows a WSL relay
+// (wslrelay.exe) can hold [::1]:<port> and reset every connection while Docker/the IDE backend listen on IPv4.
+// That made the proxy fail with ECONNRESET on /api/auth/me and /api/auth/login.
+const HOST = '127.0.0.1'
+
+/** True if something accepts TCP connections on 127.0.0.1:port. */
 function listening(port: number): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = connect({ port, host: 'localhost' })
+    const socket = connect({ port, host: HOST })
     const done = (ok: boolean) => {
       socket.destroy()
       resolve(ok)
@@ -35,7 +40,7 @@ export default defineConfig(({ mode }) => {
     let target: string | null = null
     for (const port of ports) {
       if (await listening(Number(port))) {
-        target = `http://localhost:${port}`
+        target = `http://${HOST}:${port}`
         break
       }
     }
@@ -45,14 +50,22 @@ export default defineConfig(({ mode }) => {
 
   // The object handed to `configure` is the one the proxy server reads on every request, so updating its `target`
   // in `bypass` (which Vite awaits right before proxying) redirects that request.
+  //
+  // The browser sees /api as same-origin, so CORS does not apply here. Drop the Origin header: otherwise the backend
+  // checks it against CORS_ALLOWED_ORIGINS and answers 403 "Invalid CORS request" whenever Vite lands on a port that
+  // is not listed (e.g. 5175 because 5173 is taken).
   let proxyOptions: ProxyOptions | undefined
+  const stripOrigin: ProxyOptions['configure'] = (proxy) => {
+    proxy.on('proxyReq', (proxyReq) => proxyReq.removeHeader('origin'))
+  }
   const api: ProxyOptions = fixedTarget
-    ? { target: fixedTarget, changeOrigin: true }
+    ? { target: fixedTarget, changeOrigin: true, configure: stripOrigin }
     : {
-        target: `http://localhost:${ports[0]}`,
+        target: `http://${HOST}:${ports[0]}`,
         changeOrigin: true,
-        configure: (_proxy, options) => {
+        configure: (proxy, options) => {
           proxyOptions = options
+          stripOrigin(proxy, options)
         },
         bypass: async (req, res) => {
           const target = await liveTarget()
@@ -67,7 +80,7 @@ export default defineConfig(({ mode }) => {
               JSON.stringify({
                 status: 503,
                 error: 'Service Unavailable',
-                message: `Backend is not running (checked localhost:${ports.join(', localhost:')}). Start it with "docker compose up -d" or from the IDE.`,
+                message: `Backend is not running (checked ${HOST}:${ports.join(`, ${HOST}:`)}). Start it with "docker compose up -d" or from the IDE.`,
               }),
             )
           }
