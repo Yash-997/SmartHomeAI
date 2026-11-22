@@ -71,7 +71,7 @@ class SyntheticApiTests extends MlTestBase {
 		int offline = ds.get("offlineMinutes").asInt();
 		assertEquals(30 * 1440 - offline, ds.get("recordCount").asInt(), "one reading per online minute");
 		assertEquals(ds.get("recordCount").asLong(), syntheticReadings(p));
-		assertEquals(5, ds.get("scenarios").size());
+		assertEquals(18, ds.get("scenarios").size(), "9 anomaly types, once in validation and once in test");
 		assertEquals(realBefore, realReadings(p), "real telemetry is untouched: nothing synthetic is written to it");
 		assertTrue(s.get("model").isNull(), "nothing is trained by generating");
 	}
@@ -123,10 +123,28 @@ class SyntheticApiTests extends MlTestBase {
 	void everyLabelledAnomalyScenarioIsDetectedAndFalsePositivesAreReported() throws Exception {
 		Paired p = trainedDevice();
 		JsonNode a = call(p, get(url(p, "")).header("Authorization", p.auth())).get("anomalies");
-		assertEquals(5, a.get("scenarios").size());
+		assertEquals(18, a.get("scenarios").size());
 		for (JsonNode sc : a.get("scenarios")) {
 			assertTrue(sc.get("detected").asBoolean(), sc.toString());
 		}
+		// The Isolation Forest evaluation: rules, forest and both combined, on the untouched test period.
+		JsonNode forest = call(p, get(url(p, "")).header("Authorization", p.auth())).get("forest");
+		assertEquals("SYNTHETIC", forest.get("source").asString());
+		assertEquals(3, forest.get("test").size());
+		for (JsonNode d : forest.get("test")) {
+			assertTrue(d.has("precision") && d.has("recall") && d.has("f1") && d.has("falseAlarmsPerHour") && d.has("confusion"), d.toString());
+			assertEquals(9, d.get("byType").size(), "every anomaly type is reported");
+		}
+		JsonNode hybrid = forest.get("test").get(2);
+		assertEquals("HYBRID", hybrid.get("detector").asString());
+		assertEquals(9, hybrid.get("windowsDetected").asInt(), "the combined detector finds every test anomaly");
+		assertTrue(hybrid.get("recall").asDouble() >= forest.get("test").get(0).get("recall").asDouble(), "the forest never removes a rule alarm");
+		// Stored as the SYNTHETIC anomaly model only: the device has no real-data model, so live detection does not use it.
+		assertTrue(mlModels.findByDeviceUuidAndModelType(p.uuid(), com.smarthome.ml.MlModel.ANOMALY_IF_SYNTHETIC).orElseThrow().hasModel());
+		assertTrue(mlModels.findByDeviceUuidAndModelType(p.uuid(), com.smarthome.ml.MlModel.ANOMALY_IF).isEmpty());
+		JsonNode status = call(p, get("/api/devices/" + p.uuid() + "/ml/anomaly-model").header("Authorization", p.auth()));
+		assertFalse(status.get("liveDetection").asBoolean());
+		assertEquals("SYNTHETIC", status.get("synthetic").get("dataSource").asString());
 		assertTrue(a.has("totalFalsePositiveEpisodes"), "false positives are reported, not hidden");
 		assertTrue(a.get("normalHours").asDouble() > 24);
 	}

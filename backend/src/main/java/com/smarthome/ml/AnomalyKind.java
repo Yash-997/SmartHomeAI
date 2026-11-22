@@ -15,5 +15,17 @@ public enum AnomalyKind {
 	/** A jump between two consecutive readings far larger than this sensor's usual reading-to-reading change. */
 	SUDDEN_CHANGE,
 	/** Motion at an hour of the week when the learned household pattern says the place is normally quiet. */
-	UNUSUAL_ACTIVITY
+	UNUSUAL_ACTIVITY,
+	/** A minute the Isolation Forest finds unlike the device's normal data, across all sensors and their relationships. */
+	MULTIVARIATE_OUTLIER;
+
+	/** Which detector produces this kind: ROBUST_STATISTICS, RULE, OCCUPANCY_MODEL or ISOLATION_FOREST. */
+	public String detector() {
+		return switch (this) {
+			case STATISTICAL_OUTLIER, SUDDEN_CHANGE -> "ROBUST_STATISTICS";
+			case OUT_OF_RANGE, STUCK_VALUE, MISSING_DATA, STALE_DATA -> "RULE";
+			case UNUSUAL_ACTIVITY -> "OCCUPANCY_MODEL";
+			case MULTIVARIATE_OUTLIER -> "ISOLATION_FOREST";
+		};
+	}
 }

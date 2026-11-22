@@ -21,6 +21,10 @@ public class MlModel {
 	public static final String OCCUPANCY = "OCCUPANCY";
 	/** A demonstration model trained on a generated dataset. Never used for the device's real predictions. */
 	public static final String OCCUPANCY_SYNTHETIC = "OCCUPANCY_SYNTH";
+	/** The Isolation Forest anomaly model trained on the device's real telemetry. The only one used for live detection. */
+	public static final String ANOMALY_IF = "ANOMALY_IF";
+	/** The Isolation Forest trained on the device's SYNTHETIC dataset. Evaluation and demonstration only. */
+	public static final String ANOMALY_IF_SYNTHETIC = "ANOMALY_IF_SYNTH";
 
 	@Id
 	private UUID id;
@@ -72,6 +76,10 @@ public class MlModel {
 	@Column(name = "metrics_json", length = 2000)
 	private String metricsJson;
 
+	/** The full anomaly model (forests, preprocessing, threshold) as JSON; null for occupancy models. */
+	@Column(name = "artifact_json")
+	private String artifactJson;
+
 	/** 0 until the first model; +1 every time a training run produces a new current model. */
 	@Column(nullable = false)
 	private int version;
@@ -110,6 +118,34 @@ public class MlModel {
 			this.version++;
 		}
 	}
+
+	/**
+	 * Replaces everything with the outcome of an anomaly-model training run. For anomaly models a "bucket" is one minute:
+	 * {@code labeledBuckets} holds the training minutes and {@code positiveBuckets} the minutes left out of training.
+	 * {@code summaryJson} is a short description; {@code artifactJson} the model itself (null when none was trained).
+	 */
+	public void recordAnomalyModel(OccupancyTrainer.Status status, String message, String zone, Instant from, Instant to, int samples,
+			int trainingMinutes, int excludedMinutes, int distinctDays, String summaryJson, String artifactJson, String metricsJson, Instant now) {
+		this.status = status;
+		this.reason = message == null ? null : message.substring(0, Math.min(400, message.length()));
+		this.timeZone = zone;
+		this.bucketMinutes = 1;
+		this.trainedAt = now;
+		this.dataFrom = from;
+		this.dataTo = to;
+		this.samples = samples;
+		this.labeledBuckets = trainingMinutes;
+		this.positiveBuckets = excludedMinutes;
+		this.distinctDays = distinctDays;
+		this.modelJson = artifactJson == null ? null : summaryJson;
+		this.artifactJson = artifactJson;
+		this.metricsJson = metricsJson;
+		if (artifactJson != null) {
+			this.version++;
+		}
+	}
+
+	public String getArtifactJson() { return artifactJson; }
 
 	public boolean hasModel() {
 		return modelJson != null;

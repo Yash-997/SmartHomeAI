@@ -102,10 +102,24 @@ public final class MlDtos {
 
 	public record AnomalyResponse(UUID id, AnomalyKind kind, String scope, AnomalySeverity severity, AnomalyStatus status,
 			String explanation, JsonNode details, Instant detectedAt, Instant lastSeenAt, int occurrences, Instant readingAt,
-			Instant resolvedAt, String resolutionNote, String emailStatus, Instant emailAt, String emailError) {
+			Instant resolvedAt, String resolutionNote, String emailStatus, Instant emailAt, String emailError, String detector,
+			Double detectedValue, Double expectedLow, Double expectedHigh) {
 	}
 
 	public record AnomalySummary(long active, long critical, long warning, long info, Instant lastScanAt) {
+	}
+
+	/**
+	 * One stored anomaly model. state: READY, LOW_QUALITY or INSUFFICIENT_DATA. {@code model}: forests, threshold and seed
+	 * (null when none was trained). {@code evaluation}: for REAL data the alarm rates (no labels exist, so no precision or
+	 * recall); for SYNTHETIC data the full labelled evaluation.
+	 */
+	public record AnomalyModelInfo(String modelType, String dataSource, String state, int version, Instant trainedAt, String message,
+			String timeZone, Instant dataFrom, Instant dataTo, int trainingMinutes, JsonNode model, JsonNode evaluation) {
+	}
+
+	/** {@code liveDetection}: the real-data model is READY and the live scanner uses it. */
+	public record AnomalyModelStatusResponse(AnomalyModelInfo real, AnomalyModelInfo synthetic, boolean liveDetection, String notice) {
 	}
 
 	public record MlStatusResponse(OccupancyStatusResponse occupancy, AnomalySummary anomalies, String notice) {

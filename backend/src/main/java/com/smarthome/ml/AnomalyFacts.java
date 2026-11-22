@@ -15,6 +15,47 @@ public final class AnomalyFacts {
 	private AnomalyFacts() {
 	}
 
+	/** The measured value and the normal range of a finding as numbers; any of them null when the detector has none. */
+	public record Numbers(Double value, Double low, Double high) {
+	}
+
+	/** Taken from the numbers each detector stores in its details, with the same thresholds it used. */
+	public static Numbers numbers(AnomalyKind kind, java.util.Map<String, Object> d) {
+		Double value = dbl(d.get("value"));
+		Double low = null, high = null;
+		switch (kind) {
+			case STATISTICAL_OUTLIER -> {
+				Double m = dbl(d.get("median")), s = dbl(d.get("spread")), w = dbl(d.get("warnAt"));
+				if (m != null && s != null && w != null) {
+					low = m - w * s;
+					high = m + w * s;
+				}
+			}
+			case SUDDEN_CHANGE -> {
+				Double prev = dbl(d.get("previous")), t = dbl(d.get("typicalChange")), s = dbl(d.get("spread")), w = dbl(d.get("warnAt"));
+				if (prev != null && t != null && s != null && w != null) {
+					low = prev + t - w * s;
+					high = prev + t + w * s;
+				}
+			}
+			case OUT_OF_RANGE -> {
+				low = dbl(d.get("usableMin"));
+				high = d.containsKey("usableMax") ? dbl(d.get("usableMax")) : dbl(d.get("adcMaximum"));
+			}
+			case MULTIVARIATE_OUTLIER -> {
+				low = dbl(d.get("expectedLow"));
+				high = dbl(d.get("expectedHigh"));
+			}
+			default -> {
+			}
+		}
+		return new Numbers(value, low, high);
+	}
+
+	private static Double dbl(Object o) {
+		return o instanceof Number n && Double.isFinite(n.doubleValue()) ? n.doubleValue() : null;
+	}
+
 	/** "temperature" -> "Temperature (°C)" and so on. */
 	public static String sensor(String scope) {
 		if (scope == null) {
@@ -63,6 +104,9 @@ public final class AnomalyFacts {
 		if ("STUCK_VALUE".equals(kind) && has(d, "value")) {
 			return num(d.get("value").asDouble()) + unit + " repeated " + text(d, "identicalReadings", "many") + " times";
 		}
+		if ("MULTIVARIATE_OUTLIER".equals(kind) && !has(d, "value")) {
+			return has(d, "score") ? "anomaly score " + d.get("score").asString() : "-";
+		}
 		return has(d, "value") ? num(d.get("value").asDouble()) + unit : "-";
 	}
 
@@ -101,6 +145,12 @@ public final class AnomalyFacts {
 			}
 			case "STALE_DATA" -> {
 				return "regular reports from the device";
+			}
+			case "MULTIVARIATE_OUTLIER" -> {
+				if (has(d, "expectedLow") && has(d, "expectedHigh")) {
+					return num(d.get("expectedLow").asDouble()) + unit + " to " + num(d.get("expectedHigh").asDouble()) + unit + " (this time of day)";
+				}
+				return "behaviour like the learned normal data";
 			}
 			case "UNUSUAL_ACTIVITY" -> {
 				if (has(d, "quietAtMost")) {

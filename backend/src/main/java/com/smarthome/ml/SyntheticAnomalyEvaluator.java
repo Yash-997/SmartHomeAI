@@ -46,12 +46,21 @@ public final class SyntheticAnomalyEvaluator {
 	private SyntheticAnomalyEvaluator() {
 	}
 
-	private static final Map<Scenario, Set<AnomalyKind>> EXPECTED = new EnumMap<>(Map.of(
+	/** The rule meant for each labelled scenario. The statistical rules are expected to catch spikes, drops and abnormal gas. */
+	static final Map<Scenario, Set<AnomalyKind>> EXPECTED = new EnumMap<>(Map.of(
 			Scenario.FROZEN_SENSOR, Set.of(AnomalyKind.STUCK_VALUE),
 			Scenario.GAS_SATURATION, Set.of(AnomalyKind.OUT_OF_RANGE),
 			Scenario.MISSING_VALUES, Set.of(AnomalyKind.MISSING_DATA),
 			Scenario.DISCONNECTION, Set.of(AnomalyKind.STALE_DATA),
-			Scenario.UNUSUAL_MOTION, Set.of(AnomalyKind.UNUSUAL_ACTIVITY)));
+			Scenario.UNUSUAL_MOTION, Set.of(AnomalyKind.UNUSUAL_ACTIVITY),
+			Scenario.SPIKE, Set.of(AnomalyKind.STATISTICAL_OUTLIER, AnomalyKind.SUDDEN_CHANGE),
+			Scenario.SUDDEN_DROP, Set.of(AnomalyKind.STATISTICAL_OUTLIER, AnomalyKind.SUDDEN_CHANGE),
+			Scenario.GRADUAL_DRIFT, Set.of(AnomalyKind.STATISTICAL_OUTLIER),
+			Scenario.ABNORMAL_GAS, Set.of(AnomalyKind.STATISTICAL_OUTLIER, AnomalyKind.SUDDEN_CHANGE)));
+
+	/** Rule findings for every minute of [from, to): {@code minutes.get(i)} belongs to {@code from + i minutes}. */
+	record RuleTrace(Instant from, List<List<Finding>> minutes) {
+	}
 
 	/** @param model the occupancy model trained on this dataset (for the unusual-motion rule), or null */
 	public static Evaluation evaluate(SyntheticGenerator.Dataset ds, OccupancyModel model, MlProperties props) {
@@ -60,7 +69,32 @@ public final class SyntheticAnomalyEvaluator {
 		Instant from = firstScenario.minus(Duration.ofDays(1)).isBefore(ds.start().plus(Duration.ofDays(cfg.baselineDays())))
 				? ds.start().plus(Duration.ofDays(cfg.baselineDays())) : firstScenario.minus(Duration.ofDays(1));
 		Instant to = ds.end();
+		RuleTrace trace = trace(ds, model, props, from, to);
 
+		List<Episode> episodes = new ArrayList<>();
+		Map<String, Instant> lastSeen = new HashMap<>();        // kind:scope -> last minute it fired (to merge episodes)
+		for (int i = 0; i < trace.minutes().size(); i++) {
+			Instant t = from.plusSeconds(60L * i);
+			for (Finding f : trace.minutes().get(i)) {
+				String key = f.kind() + ":" + f.scope();
+				Instant prev = lastSeen.get(key);
+				if (prev == null || Duration.between(prev, t).toMinutes() > 2) {
+					episodes.add(new Episode(f.kind(), f.scope(), t));   // a new episode of this problem
+				}
+				lastSeen.put(key, t);
+			}
+		}
+		return score(ds, cfg, from, to, episodes);
+	}
+
+	/**
+	 * Replays [from, to) minute by minute through the rules, exactly as the live scanner applies them: plausibility,
+	 * robust outlier against a baseline rebuilt once a day from the previous {@code baselineDays}, sudden change,
+	 * unusual activity (with a model), stale, stuck and missing over the recent window.
+	 */
+	static RuleTrace trace(SyntheticGenerator.Dataset ds, OccupancyModel model, MlProperties props, Instant from, Instant to) {
+		MlProperties.Anomaly cfg = props.anomaly();
+		List<List<Finding>> perMinute = new ArrayList<>();
 		Map<Long, Reading> byMinute = new HashMap<>();
 		for (Reading r : ds.readings()) {
 			byMinute.put(r.at().getEpochSecond() / 60, r);
@@ -78,8 +112,6 @@ public final class SyntheticAnomalyEvaluator {
 		}
 		Instant lastAt = recent.isEmpty() ? null : recent.peekFirst().at();
 
-		List<Episode> episodes = new ArrayList<>();
-		Map<String, Instant> lastSeen = new HashMap<>();        // kind:scope -> last minute it fired (to merge episodes)
 		Baselines baselines = null;
 		long baselineDay = -1;
 		java.time.ZoneId zone = model == null ? ds.zone() : java.time.ZoneId.of(model.timeZone());
@@ -129,19 +161,16 @@ public final class SyntheticAnomalyEvaluator {
 				found.add(AnomalyDetectors.stuck(m, window, cfg));
 				found.add(AnomalyDetectors.missing(m, window, cfg));
 			}
+			List<Finding> minute = new ArrayList<>(2);
 			for (Optional<Finding> f : found) {
-				if (f.isEmpty()) {
-					continue;
-				}
-				String key = f.get().kind() + ":" + f.get().scope();
-				Instant prev = lastSeen.get(key);
-				if (prev == null || Duration.between(prev, t).toMinutes() > 2) {
-					episodes.add(new Episode(f.get().kind(), f.get().scope(), t));   // a new episode of this problem
-				}
-				lastSeen.put(key, t);
+				f.ifPresent(minute::add);
 			}
+			perMinute.add(minute);
 		}
+		return new RuleTrace(from, perMinute);
+	}
 
+	private static Evaluation score(SyntheticGenerator.Dataset ds, MlProperties.Anomaly cfg, Instant from, Instant to, List<Episode> episodes) {
 		List<ScenarioResult> results = new ArrayList<>();
 		for (ScenarioWindow w : ds.scenarios()) {
 			Set<AnomalyKind> expected = EXPECTED.get(w.scenario());

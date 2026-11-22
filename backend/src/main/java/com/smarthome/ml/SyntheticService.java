@@ -69,12 +69,14 @@ public class SyntheticService {
 	private final MlModelRepository models;
 	private final MlTrainingRunRepository runs;
 	private final MlProperties props;
+	private final AnomalyModelService anomalyModels;
 	private final ObjectMapper mapper;
 	private final Clock clock;
 	private final Map<UUID, Instant> lastTraining = new ConcurrentHashMap<>();
 
 	public SyntheticService(DeviceService deviceService, JdbcTemplate jdbc, TransactionTemplate tx, MlModelRepository models,
-			MlTrainingRunRepository runs, MlProperties props, ObjectMapper mapper, Clock clock) {
+			MlTrainingRunRepository runs, MlProperties props, ObjectMapper mapper, Clock clock, AnomalyModelService anomalyModels) {
+		this.anomalyModels = anomalyModels;
 		this.deviceService = deviceService;
 		this.jdbc = jdbc;
 		this.tx = tx;
@@ -173,6 +175,7 @@ public class SyntheticService {
 		SyntheticGenerator.Dataset ds = load(row);
 		SyntheticTrainer.Result r = SyntheticTrainer.train(ds, props.occupancy());
 		SyntheticAnomalyEvaluator.Evaluation eval = SyntheticAnomalyEvaluator.evaluate(ds, r.model(), props);
+		AnomalyBenchmark.Report forest = anomalyModels.trainSynthetic(d.getId(), row.id(), ds, r.model(), now);
 		long durationMs = (System.nanoTime() - started) / 1_000_000;
 
 		MetricsResponse metrics = r.metrics() == null ? null : new MetricsResponse(r.train().slots() + r.validation().slots(), r.metrics().n(),
@@ -194,7 +197,7 @@ public class SyntheticService {
 
 		TrainingDetails details = new TrainingDetails(r.lambda(), r.validationLogLoss(), r.train(), r.validation(), r.test(),
 				SyntheticTrainer.EMBARGO.toMinutes(), r.embargoDropped(), r.scenarioSlotsExcluded(), r.agreement());
-		jdbc.update("update synthetic_datasets set evaluation_json = ? where id = ?", mapper.writeValueAsString(new StoredEvaluation(details, eval)), row.id());
+		jdbc.update("update synthetic_datasets set evaluation_json = ? where id = ?", mapper.writeValueAsString(new StoredEvaluation(details, eval, forest)), row.id());
 		return status(d, false);
 	}
 
@@ -207,7 +210,7 @@ public class SyntheticService {
 	private SyntheticStatusResponse status(Device d, boolean generated) {
 		Optional<Row> row = latest(d.getId());
 		if (row.isEmpty()) {
-			return new SyntheticStatusResponse(SyntheticDtos.SOURCE, SyntheticDtos.NOTICE, null, null, null, null, false);
+			return new SyntheticStatusResponse(SyntheticDtos.SOURCE, SyntheticDtos.NOTICE, null, null, null, null, null, false);
 		}
 		Row r = row.get();
 		List<ScenarioInfo> scenarios = mapper.readValue(r.scenariosJson(), new TypeReference<List<ScenarioInfo>>() { });
@@ -224,7 +227,7 @@ public class SyntheticService {
 				.orElse(null);
 		StoredEvaluation stored = r.evaluationJson() == null ? null : mapper.readValue(r.evaluationJson(), StoredEvaluation.class);
 		return new SyntheticStatusResponse(SyntheticDtos.SOURCE, SyntheticDtos.NOTICE, info, model, stored == null ? null : stored.training(),
-				stored == null ? null : stored.anomalies(), generated);
+				stored == null ? null : stored.anomalies(), stored == null ? null : stored.forest(), generated);
 	}
 
 	/** Predictions of the SYNTHETIC demonstration model. Labelled as such; never used for the device's real predictions. */

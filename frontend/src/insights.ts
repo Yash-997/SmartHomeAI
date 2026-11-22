@@ -88,6 +88,7 @@ export const KIND: Record<AnomalyKind, string> = {
   STALE_DATA: 'Device silent',
   SUDDEN_CHANGE: 'Sudden change',
   UNUSUAL_ACTIVITY: 'Motion at a normally quiet time',
+  MULTIVARIATE_OUTLIER: 'Unusual sensor pattern (Isolation Forest)',
 }
 
 export const isActive = (s: AnomalyStatus) => s === 'OPEN' || s === 'ACKNOWLEDGED'

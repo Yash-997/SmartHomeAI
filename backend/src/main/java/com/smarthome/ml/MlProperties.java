@@ -14,7 +14,41 @@ import org.springframework.boot.context.properties.source.MapConfigurationProper
 @ConfigurationProperties(prefix = "app.ml")
 public record MlProperties(@DefaultValue Occupancy occupancy, @DefaultValue Training training, @DefaultValue Anomaly anomaly,
 		/** Local time used for "time of day" when training automatically or when no zone is given (IANA name). */
-		@DefaultValue("Asia/Kolkata") String defaultTimeZone) {
+		@DefaultValue("Asia/Kolkata") String defaultTimeZone,
+		@DefaultValue Forest forest) {
+
+	/**
+	 * The Isolation Forest anomaly model (prefix {@code app.ml.forest}). It adds findings next to the statistical rules and
+	 * never removes or replaces one; the device's gas warning and the backend gas alert do not depend on it at all.
+	 */
+	public record Forest(
+			/** Live scoring with the device's READY model. Training is still possible when this is off. */
+			@DefaultValue("true") boolean enabled,
+			/** Rolling-window length for the features. */
+			@DefaultValue("30") int windowMinutes,
+			/** Fixed seed: the same data always gives the same forest. */
+			@DefaultValue("42") long seed,
+			// Grid searched on the labelled validation period of SYNTHETIC data (best F1 of the combined detector).
+			@DefaultValue("100,200") java.util.List<Integer> treeCandidates,
+			@DefaultValue("256,1024") java.util.List<Integer> subsampleCandidates,
+			/** The alarm threshold is this quantile of the training scores. */
+			@DefaultValue("0.97,0.98,0.99,0.995,0.999") java.util.List<Double> quantileCandidates,
+			/** Consecutive minutes at or above the threshold before the forest raises an alarm. */
+			@DefaultValue("1,2,3,5") java.util.List<Integer> consecutiveCandidates,
+			// Real telemetry has no labels: fixed forest size, threshold chosen to keep false alarms within budget.
+			@DefaultValue("100") int trees,
+			@DefaultValue("256") int subsample,
+			/** History used to train on real telemetry. */
+			@DefaultValue("21") int trainingDays,
+			/** At least this many minutes with readings (about two days) before a real model is trained. */
+			@DefaultValue("2880") int minTrainingFrames,
+			@DefaultValue("3") int minDistinctDays,
+			/** Alarm budget on the unlabelled validation part; a model over 3x this on its test part is not used. */
+			@DefaultValue("1.0") double maxFalseAlarmsPerDay,
+			@DefaultValue("24") int retrainIntervalHours,
+			/** Safety cap on telemetry rows loaded for one training run. */
+			@DefaultValue("150000") int maxSamples) {
+	}
 
 	/** The configured default zone, or UTC if the setting is not a valid zone name. */
 	public java.time.ZoneId zone() {

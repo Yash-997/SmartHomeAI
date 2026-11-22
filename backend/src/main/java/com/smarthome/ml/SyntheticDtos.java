@@ -33,14 +33,15 @@ public final class SyntheticDtos {
 			SyntheticTrainer.OccupancyAgreement agreementWithTrueOccupancy) {
 	}
 
-	public record StoredEvaluation(TrainingDetails training, SyntheticAnomalyEvaluator.Evaluation anomalies) {
+	/** {@code forest}: the labelled evaluation of rules, Isolation Forest and both combined (null for older datasets). */
+	public record StoredEvaluation(TrainingDetails training, SyntheticAnomalyEvaluator.Evaluation anomalies, AnomalyBenchmark.Report forest) {
 	}
 
 	public record ModelInfo(String state, int version, Instant trainedAt, String timeZone, String message, MetricsResponse metrics) {
 	}
 
 	public record SyntheticStatusResponse(String source, String notice, DatasetInfo dataset, ModelInfo model, TrainingDetails training,
-			SyntheticAnomalyEvaluator.Evaluation anomalies, boolean generated) {
+			SyntheticAnomalyEvaluator.Evaluation anomalies, AnomalyBenchmark.Report forest, boolean generated) {
 	}
 
 	public record SyntheticForecastResponse(String source, String notice, int modelVersion, String timeZone, List<PredictionResponse> points) {

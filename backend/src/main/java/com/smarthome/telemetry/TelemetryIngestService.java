@@ -3,6 +3,7 @@ package com.smarthome.telemetry;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -99,7 +100,11 @@ public class TelemetryIngestService {
 			return reject(Result.REJECTED_INVALID, deviceId, "payload deviceId does not match topic");
 		}
 
-		Instant now = clock.instant();
+		// Truncated to the database's precision (TIMESTAMP(6), microseconds). Otherwise the database rounds the value half
+		// up, so a reading can be stored up to half a microsecond after the moment it was received: later than a "now"
+		// read in the same clock tick (the Windows clock advances about once a millisecond), and missing from every
+		// period that ends at that "now". Truncating keeps the stored value exactly equal to what the backend saw.
+		Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
 		try {
 			return isTelemetry
 					? telemetry(device, root, payload, retained, now)

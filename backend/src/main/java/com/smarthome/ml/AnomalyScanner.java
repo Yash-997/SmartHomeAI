@@ -49,17 +49,20 @@ public class AnomalyScanner {
 	private final MlSampleRepository samples;
 	private final AnomalyService anomalies;
 	private final OccupancyService occupancy;
+	private final AnomalyModelService anomalyModels;
 	private final MlProperties props;
 	private final Clock clock;
 	private final Map<UUID, Instant> watermark = new ConcurrentHashMap<>();
 	private final Map<UUID, Instant> motionWatermark = new ConcurrentHashMap<>();
+	private final Map<UUID, Instant> forestWatermark = new ConcurrentHashMap<>();
 	private final Map<UUID, Instant> lastScan = new ConcurrentHashMap<>();
 	private final Map<UUID, Instant> lastManual = new ConcurrentHashMap<>();
 	private final Map<UUID, CachedBaselines> baselineCache = new ConcurrentHashMap<>();
 	private final Map<UUID, Object> deviceLocks = new ConcurrentHashMap<>();
 
 	public AnomalyScanner(DeviceRepository devices, DeviceService deviceService, MlSampleRepository samples, AnomalyService anomalies,
-			OccupancyService occupancy, MlProperties props, Clock clock) {
+			OccupancyService occupancy, AnomalyModelService anomalyModels, MlProperties props, Clock clock) {
+		this.anomalyModels = anomalyModels;
 		this.devices = devices;
 		this.deviceService = deviceService;
 		this.samples = samples;
@@ -155,6 +158,13 @@ public class AnomalyScanner {
 			}
 			watermark.put(deviceUuid, recent.get(0).at());
 			raised += unusualActivity(deviceUuid, now, firstLookback);
+			// The Isolation Forest runs after every rule and in its own error boundary: it can only add findings, and a
+			// broken or missing model can never stop, delay or replace a rule finding (gas included).
+			try {
+				raised += forest(deviceUuid, now, firstLookback);
+			} catch (RuntimeException e) {
+				log.warn("Isolation Forest scoring failed for device {}: {}", deviceUuid, e.getClass().getSimpleName());
+			}
 
 			anomalies.autoResolveInactive(deviceUuid, CONDITION_KINDS, active, now);
 			anomalies.autoResolveQuiet(deviceUuid, now);
@@ -210,6 +220,40 @@ public class AnomalyScanner {
 		return raised;
 	}
 
+	/**
+	 * Scores every complete minute since the last scan with the device's READY real-data model. The current minute is
+	 * left for the next scan, so a minute is never judged on half its readings. The features need the preceding window,
+	 * which is loaded with the new minutes.
+	 */
+	int forest(UUID deviceUuid, Instant now, Duration firstLookback) {
+		if (!props.forest().enabled()) {
+			return 0;
+		}
+		Optional<AnomalyModel> model = anomalyModels.readyModel(deviceUuid);
+		if (model.isEmpty()) {
+			return 0;
+		}
+		AnomalyModel m = model.get();
+		Instant currentMinute = now.truncatedTo(ChronoUnit.MINUTES);
+		Instant since = forestWatermark.getOrDefault(deviceUuid, currentMinute.minus(firstLookback));
+		Instant from = since.minus(m.preprocessing().windowMinutes() + m.consecutive() + 2L, ChronoUnit.MINUTES);
+		List<TelemetryPoint> points = samples.findTelemetryPoints(deviceUuid, from, currentMinute, PageRequest.of(0, 20_000));
+		List<AnomalyFeatures.Row> rows = AnomalyFeatures.compute(MinuteFrame.resample(points), m.preprocessing());
+		int raised = 0;
+		for (int i = 0; i < rows.size(); i++) {
+			if (!rows.get(i).frame().at().isAfter(since)) {
+				continue;
+			}
+			Optional<Finding> f = m.judgeLatest(rows.subList(0, i + 1));
+			if (f.isPresent() && anomalies.raise(deviceUuid, f.get(), now).isPresent()) {
+				raised++;
+			}
+		}
+		Instant last = rows.isEmpty() ? null : rows.get(rows.size() - 1).frame().at();
+		forestWatermark.put(deviceUuid, last != null && last.isAfter(since) ? last : since);
+		return raised;
+	}
+
 	private boolean raise(UUID deviceUuid, Finding f, Instant now, Set<String> active) {
 		active.add(f.kind() + ":" + f.scope());   // even if suppressed, the condition still exists
 		return anomalies.raise(deviceUuid, f, now).isPresent();
@@ -233,6 +277,8 @@ public class AnomalyScanner {
 	public void forget(UUID deviceUuid) {
 		watermark.remove(deviceUuid);
 		motionWatermark.remove(deviceUuid);
+		forestWatermark.remove(deviceUuid);
+		anomalyModels.forget(deviceUuid);
 		lastScan.remove(deviceUuid);
 		lastManual.remove(deviceUuid);
 		baselineCache.remove(deviceUuid);

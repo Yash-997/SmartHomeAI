@@ -345,7 +345,9 @@ export interface Connectivity {
 }
 
 // ---- SYNTHETIC dataset (demonstration only; never the device's real data) ----
-export type SyntheticScenario = 'FROZEN_SENSOR' | 'GAS_SATURATION' | 'MISSING_VALUES' | 'DISCONNECTION' | 'UNUSUAL_MOTION'
+export type SyntheticScenario =
+  | 'FROZEN_SENSOR' | 'GAS_SATURATION' | 'MISSING_VALUES' | 'DISCONNECTION' | 'UNUSUAL_MOTION'
+  | 'SPIKE' | 'SUDDEN_DROP' | 'GRADUAL_DRIFT' | 'ABNORMAL_GAS'
 export interface SyntheticSplit { slots: number; withMotion: number; from: string | null; to: string | null }
 export interface SyntheticDataset {
   id: string
@@ -383,6 +385,29 @@ export interface SyntheticAnomalyEvaluation {
   totalFalsePositiveEpisodes: number
   method: string
 }
+export interface SyntheticDetectorResult {
+  detector: 'RULES' | 'ISOLATION_FOREST' | 'HYBRID'
+  confusion: { truePositives: number; falsePositives: number; falseNegatives: number; trueNegatives: number }
+  precision: number | null
+  recall: number | null
+  f1: number | null
+  falseAlarms: number
+  normalHours: number
+  falseAlarmsPerHour: number
+  windowsDetected: number
+  windows: number
+  meanLatencyMinutes: number | null
+  medianLatencyMinutes: number | null
+  byType: { scenario: SyntheticScenario; windows: number; detected: number; minuteRecall: number; meanLatencyMinutes: number | null }[]
+}
+export interface SyntheticForestEvaluation {
+  source: 'SYNTHETIC'
+  method: string
+  chosen: { trees: number; subsample: number; quantile: number; consecutive: number; threshold: number; validationF1: number | null }
+  candidatesTried: number
+  validation: SyntheticDetectorResult[]
+  test: SyntheticDetectorResult[]
+}
 export interface SyntheticStatus {
   source: 'SYNTHETIC'
   notice: string
@@ -390,6 +415,8 @@ export interface SyntheticStatus {
   model: { state: 'READY' | 'LOW_QUALITY' | 'INSUFFICIENT_DATA'; version: number; trainedAt: string; timeZone: string; message: string | null; metrics: MlMetrics | null } | null
   training: SyntheticTraining | null
   anomalies: SyntheticAnomalyEvaluation | null
+  /** Rules, Isolation Forest and both combined, scored on the labelled test period. */
+  forest?: SyntheticForestEvaluation | null
   generated: boolean
 }
 export interface SyntheticForecast { source: 'SYNTHETIC'; notice: string; modelVersion: number; timeZone: string; points: Prediction[] }
@@ -402,6 +429,7 @@ export type AnomalyKind =
   | 'STALE_DATA'
   | 'SUDDEN_CHANGE'
   | 'UNUSUAL_ACTIVITY'
+  | 'MULTIVARIATE_OUTLIER'
 export type AnomalySeverity = 'INFO' | 'WARNING' | 'CRITICAL'
 export type AnomalyStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED' | 'DISMISSED' | 'AUTO_RESOLVED'
 
@@ -423,6 +451,12 @@ export interface Anomaly {
   emailStatus?: EmailDelivery | null
   emailAt?: string | null
   emailError?: string | null
+  /** ROBUST_STATISTICS, RULE, OCCUPANCY_MODEL or ISOLATION_FOREST. */
+  detector?: string
+  /** The measured value and the range that would have been normal (null when the detector has no such number). */
+  detectedValue?: number | null
+  expectedLow?: number | null
+  expectedHigh?: number | null
 }
 
 export interface MlStatus {

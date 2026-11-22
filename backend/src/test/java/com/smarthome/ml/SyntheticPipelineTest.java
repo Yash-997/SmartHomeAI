@@ -110,19 +110,45 @@ class SyntheticPipelineTest {
 
 	@Test
 	void anomalyScenariosAreLabelledAndLookLikeTheFaultTheyRepresent() {
-		assertEquals(5, DS.scenarios().size());
-		List<Reading> frozen = in(Scenario.FROZEN_SENSOR);
-		assertEquals(120, frozen.size());
-		assertEquals(1, frozen.stream().map(Reading::temperature).distinct().count(), "one frozen temperature value");
+		assertEquals(18, DS.scenarios().size(), "9 anomaly types, once for validation and once for test");
+		for (Scenario s : Scenario.values()) {
+			if (s == Scenario.NORMAL) {
+				continue;
+			}
+			long val = DS.scenarios().stream().filter(w -> w.scenario() == s && SyntheticGenerator.setOf(DS, w) == SyntheticGenerator.LabelSet.VALIDATION).count();
+			long test = DS.scenarios().stream().filter(w -> w.scenario() == s && SyntheticGenerator.setOf(DS, w) == SyntheticGenerator.LabelSet.TEST).count();
+			assertEquals(1, val, s + " in validation");
+			assertEquals(1, test, s + " in test");
+		}
+		Instant valStart = SyntheticGenerator.validationStart(START, 30);
+		assertTrue(DS.scenarios().stream().allMatch(w -> !w.from().isBefore(valStart)), "no anomaly in the training period");
+		assertTrue(DS.scenarios().stream().noneMatch(w -> w.from().isBefore(SyntheticGenerator.testStart(START, 30))
+				&& w.to().isAfter(SyntheticGenerator.validationEnd(START, 30))), "no window straddles the validation/test boundary");
+		for (var w : DS.scenarios().stream().filter(w -> w.scenario() == Scenario.FROZEN_SENSOR).toList()) {
+			List<Reading> frozen = DS.readings().stream().filter(x -> !x.at().isBefore(w.from()) && x.at().isBefore(w.to())).toList();
+			assertEquals(120, frozen.size());
+			assertEquals(1, frozen.stream().map(Reading::temperature).distinct().count(), "one frozen temperature value per window");
+		}
 		assertTrue(in(Scenario.GAS_SATURATION).stream().allMatch(x -> x.gasRaw() == 4095));
 		assertTrue(in(Scenario.MISSING_VALUES).stream().allMatch(x -> x.temperature() == null && x.humidity() == null && x.gasRaw() == null));
 		assertTrue(in(Scenario.DISCONNECTION).isEmpty(), "no readings at all while disconnected");
-		assertTrue(in(Scenario.UNUSUAL_MOTION).stream().filter(x -> Boolean.TRUE.equals(x.motion())).count() >= 5);
+		assertTrue(in(Scenario.UNUSUAL_MOTION).stream().filter(x -> Boolean.TRUE.equals(x.motion())).count() >= 10);
 		ZonedDateTime unusual = in(Scenario.UNUSUAL_MOTION).get(0).at().atZone(IST);
 		assertEquals(3, unusual.getHour());
-		assertTrue(unusual.getDayOfWeek().getValue() <= 5, "a weekday night");
-		Instant testStart = START.plus(Duration.ofMillis((long) (Duration.ofDays(30).toMillis() * 0.85)));
-		assertTrue(DS.scenarios().stream().allMatch(w -> !w.from().isBefore(testStart.minus(Duration.ofDays(1)))), "scenarios sit at the end");
+		// Abnormal gas stays below the backend gas alert threshold (2500): only anomaly detection can notice it.
+		assertTrue(in(Scenario.ABNORMAL_GAS).stream().allMatch(x -> x.gasRaw() == null || x.gasRaw() < 2500));
+		double gasNormal = mean(x -> hour(x) == 23 && x.scenario() == Scenario.NORMAL, x -> x.gasRaw() == null ? null : x.gasRaw().doubleValue());
+		double gasAbnormalEnd = in(Scenario.ABNORMAL_GAS).stream().filter(x -> x.gasRaw() != null).mapToInt(Reading::gasRaw).max().orElse(0);
+		assertTrue(gasAbnormalEnd > gasNormal + 300, "abnormal gas rises well above normal: " + gasAbnormalEnd + " vs " + gasNormal);
+	}
+
+	@Test
+	void generationWithInjectedAnomaliesIsDeterministic() {
+		// The effects use no random numbers: a minute that is NORMAL reads the same whatever scenarios exist elsewhere.
+		Dataset again = SyntheticGenerator.generate(START, 30, IST, 42);
+		assertEquals(DS.readings(), again.readings());
+		long drifted = in(Scenario.GRADUAL_DRIFT).size();
+		assertEquals(2 * 360, drifted, "two six-hour drift windows");
 	}
 
 	// ---- training --------------------------------------------------------------------------------
@@ -170,7 +196,9 @@ class SyntheticPipelineTest {
 		SyntheticAnomalyEvaluator.Evaluation e = SyntheticAnomalyEvaluator.evaluate(DS, t.model(), PROPS);
 		for (SyntheticAnomalyEvaluator.ScenarioResult s : e.scenarios()) {
 			assertTrue(s.detected(), s.scenario() + " not detected");
-			assertTrue(s.delayMinutes() <= 70, s.scenario() + " took " + s.delayMinutes() + " min");
+			// A drift is small at first by design: the rules notice it once it has grown, within its six hours.
+			long limit = s.scenario() == Scenario.GRADUAL_DRIFT ? 360 : 70;
+			assertTrue(s.delayMinutes() <= limit, s.scenario() + " took " + s.delayMinutes() + " min");
 		}
 		assertTrue(e.normalHours() > 24, "false positives are measured over normal operation too");
 	}

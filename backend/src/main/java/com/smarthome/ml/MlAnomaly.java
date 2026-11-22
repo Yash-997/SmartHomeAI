@@ -66,6 +66,16 @@ public class MlAnomaly {
 	@Column(name = "resolution_note", length = 200)
 	private String resolutionNote;
 
+	/** The measured value and the range that would have been normal, when the detector has those numbers. */
+	@Column(name = "detected_value")
+	private Double detectedValue;
+
+	@Column(name = "expected_low")
+	private Double expectedLow;
+
+	@Column(name = "expected_high")
+	private Double expectedHigh;
+
 	// Email delivery. Read-only here: the scanner saves this entity while the alert worker may be sending, so these
 	// columns are written only by the targeted updates in MlAnomalyRepository and never overwritten by an entity save.
 	@Column(name = "email_status", length = 8, insertable = false, updatable = false)
@@ -108,6 +118,13 @@ public class MlAnomaly {
 		this.occurrences++;
 	}
 
+	/** Latest measured value and normal range (null when the detector has none). */
+	public void measured(Double value, Double low, Double high) {
+		this.detectedValue = value;
+		this.expectedLow = low;
+		this.expectedHigh = high;
+	}
+
 	public void close(AnomalyStatus to, String note, Instant now) {
 		this.status = to;
 		this.resolvedAt = now;
@@ -139,4 +156,7 @@ public class MlAnomaly {
 	public String getEmailStatus() { return emailStatus; }
 	public Instant getEmailAt() { return emailAt; }
 	public String getEmailError() { return emailError; }
+	public Double getDetectedValue() { return detectedValue; }
+	public Double getExpectedLow() { return expectedLow; }
+	public Double getExpectedHigh() { return expectedHigh; }
 }

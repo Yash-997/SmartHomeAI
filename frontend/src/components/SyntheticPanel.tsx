@@ -8,6 +8,10 @@ const SCENARIO_LABEL: Record<string, string> = {
   MISSING_VALUES: 'Missing sensor values',
   DISCONNECTION: 'Device disconnected',
   UNUSUAL_MOTION: 'Unusual motion',
+  SPIKE: 'Short spike',
+  SUDDEN_DROP: 'Sudden drop',
+  GRADUAL_DRIFT: 'Gradual drift',
+  ABNORMAL_GAS: 'Abnormal gas (below alarm level)',
 }
 
 /**
@@ -183,7 +187,7 @@ export default function SyntheticPanel({ deviceId }: { deviceId: string }) {
               <h4 className="text-sm font-medium">Anomaly scenarios <SyntheticBadge /></h4>
               <ul className="mt-2 space-y-1 text-xs">
                 {s.anomalies.scenarios.map((a) => (
-                  <li key={a.scenario} className="flex flex-wrap gap-x-2">
+                  <li key={a.from} className="flex flex-wrap gap-x-2">
                     <span className={`w-20 font-medium ${a.detected ? 'text-green-300' : 'text-red-300'}`}>{a.detected ? 'detected' : 'missed'}</span>
                     <span className="text-slate-200">{SCENARIO_LABEL[a.scenario] ?? a.scenario}</span>
                     <span className="text-slate-500">{a.detected ? `after ${a.delayMinutes} min as ${a.detectedAs}` : `expected ${a.expectedRule}`}</span>
@@ -194,6 +198,47 @@ export default function SyntheticPanel({ deviceId }: { deviceId: string }) {
                 False alarms in {num(s.anomalies.normalHours, 0)} hours of normal simulated operation: {s.anomalies.totalFalsePositiveEpisodes}
                 {Object.keys(s.anomalies.falsePositiveEpisodes).length > 0 && ` (${Object.entries(s.anomalies.falsePositiveEpisodes).map(([k, v]) => `${k.toLowerCase().replace(/_/g, ' ')} ${v}`).join(', ')})`}.
                 {' '}The existing rules were not tuned to this data.
+              </p>
+            </div>
+          )}
+
+          {/* ---- Isolation Forest evaluation ---- */}
+          {s.forest && (
+            <div className="mt-4">
+              <h4 className="text-sm font-medium">Rules + Isolation Forest, test period <SyntheticBadge /></h4>
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="text-slate-500">
+                    <tr>
+                      <th className="py-1 pr-3 font-normal">Detector</th>
+                      <th className="py-1 pr-3 font-normal">Precision</th>
+                      <th className="py-1 pr-3 font-normal">Recall</th>
+                      <th className="py-1 pr-3 font-normal">F1</th>
+                      <th className="py-1 pr-3 font-normal">False alarms / h</th>
+                      <th className="py-1 pr-3 font-normal">Detected</th>
+                      <th className="py-1 font-normal">Median latency</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {s.forest.test.map((d) => (
+                      <tr key={d.detector} className="border-t border-slate-800 text-slate-200">
+                        <td className="py-1 pr-3">{d.detector === 'HYBRID' ? 'Rules + forest' : d.detector === 'RULES' ? 'Rules' : 'Isolation Forest'}</td>
+                        <td className="py-1 pr-3">{d.precision == null ? '-' : num(d.precision, 3)}</td>
+                        <td className="py-1 pr-3">{d.recall == null ? '-' : num(d.recall, 3)}</td>
+                        <td className="py-1 pr-3">{d.f1 == null ? '-' : num(d.f1, 3)}</td>
+                        <td className="py-1 pr-3">{num(d.falseAlarmsPerHour, 3)}</td>
+                        <td className="py-1 pr-3">{d.windowsDetected} / {d.windows}</td>
+                        <td className="py-1">{d.medianLatencyMinutes == null ? '-' : `${num(d.medianLatencyMinutes, 0)} min`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-2 text-[11px] text-slate-500">
+                Settings chosen on the validation period from {s.forest.candidatesTried} candidates: {s.forest.chosen.trees} trees per sensor group,
+                subsample {s.forest.chosen.subsample}, alarm at the {num(s.forest.chosen.quantile * 100, 1)}th percentile of normal scores for{' '}
+                {s.forest.chosen.consecutive} minute(s) in a row. Scored per minute; the test anomalies differ from the validation ones. The forest only
+                adds alarms, it never removes a rule alarm.
               </p>
             </div>
           )}

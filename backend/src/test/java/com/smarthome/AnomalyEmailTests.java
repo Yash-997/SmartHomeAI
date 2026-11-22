@@ -90,7 +90,8 @@ class AnomalyEmailTests extends MlTestBase {
 		assertTrue(m.subject().startsWith("CRITICAL ANOMALY: "), m.subject());
 		assertTrue(m.html().contains("ANOMALY DETECTED"));
 		assertTrue(m.body().contains("Temperature (°C)") && m.body().contains("45 °C"), m.body());
-		assertTrue(m.body().contains("Expected range:") && m.body().contains("(typical 22"), m.body());
+		// The typical value comes from an hour-of-day baseline, so it is about 22 °C (21.9 or 22 depending on the hour the test runs).
+		assertTrue(m.body().contains("Expected range:") && m.body().matches("(?s).*\\(typical 2[12](\\.\\d)? °C\\).*"), m.body());
 		assertTrue(m.body().contains("CRITICAL") && m.body().contains(p.deviceId()), "severity and device ID");
 		assertTrue(m.body().contains("robust standard deviations"), "the anomaly description");
 

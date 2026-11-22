@@ -29,14 +29,32 @@ import java.util.Random;
  *   <li><b>Faults</b>: rare single DHT22 read failures (both values missing, as the real firmware reports them) and a few
  *       random Wi-Fi outages, during which no readings exist at all.</li>
  * </ul>
- * Five labelled anomaly scenarios are placed in the last days, which the training split keeps for testing.
+ * Nine kinds of labelled anomaly are injected (spike, sudden drop, gradual drift, frozen sensor, missing values,
+ * disconnection, gas saturation, abnormal gas, unusual motion): one of each in the validation period and one of each in
+ * the test period of the chronological split (see {@link SyntheticTrainer}), never in the training period, so models
+ * learn from normal data only. The test instances hit different sensors or magnitudes than the validation ones, so a
+ * threshold tuned on validation is tested on anomalies it has not seen. The injected effects are deterministic and use
+ * no random numbers, so every normal minute is exactly what synth-1 produced for the same seed.
  */
 public final class SyntheticGenerator {
 
-	public static final String VERSION = "synth-1";
+	public static final String VERSION = "synth-2";
 
 	/** NORMAL, or the labelled anomaly scenario a minute belongs to. */
-	public enum Scenario { NORMAL, FROZEN_SENSOR, GAS_SATURATION, MISSING_VALUES, DISCONNECTION, UNUSUAL_MOTION }
+	public enum Scenario {
+		NORMAL, FROZEN_SENSOR, GAS_SATURATION, MISSING_VALUES, DISCONNECTION, UNUSUAL_MOTION,
+		/** A short jump of one sensor (heat source next to the DHT22, a bad read burst). */
+		SPIKE,
+		/** A sudden step down that persists for a while (a window opened, a sensor fault). */
+		SUDDEN_DROP,
+		/** A slowly growing offset (sensor calibration drift): each minute looks almost normal. */
+		GRADUAL_DRIFT,
+		/** MQ-2 reading well above its normal level but below the gas alert threshold (smoke, a gas leak starting). */
+		ABNORMAL_GAS
+	}
+
+	/** Which labelled set a scenario belongs to. */
+	public enum LabelSet { VALIDATION, TEST }
 
 	enum State { ASLEEP, ACTIVE, AWAY }
 
@@ -53,6 +71,13 @@ public final class SyntheticGenerator {
 
 	public record Dataset(Instant start, Instant end, ZoneId zone, long seed, int days, List<Reading> readings,
 			List<ConnectivityEvent> connectivity, List<ScenarioWindow> scenarios, int offlineMinutes) {
+	}
+
+	/** What an injected scenario does to the readings: an offset of {@code amplitude} on one sensor, as a step or a ramp. */
+	private record Effect(Metric metric, double amplitude, boolean ramp) {
+	}
+
+	private record Placed(ScenarioWindow window, Effect effect) {
 	}
 
 	/** One day's plan, in minutes after local midnight. */
@@ -75,7 +100,8 @@ public final class SyntheticGenerator {
 		for (int d = 0; d < days; d++) {
 			plans.add(plan(firstDay.plusDays(d).getDayOfWeek(), rnd));
 		}
-		List<ScenarioWindow> scenarios = scenarios(firstDay, days, zone);
+		List<Placed> placed = layout(start, days, zone);
+		List<ScenarioWindow> scenarios = placed.stream().map(Placed::window).toList();
 		List<long[]> outages = outages(start, days, rnd);   // random Wi-Fi outages [fromEpochMin, toEpochMin), early days only
 
 		List<Reading> out = new ArrayList<>(days * 1440);
@@ -102,7 +128,12 @@ public final class SyntheticGenerator {
 			int minuteOfDay = local.getHour() * 60 + local.getMinute();
 			DayPlan p = plans.get(day);
 			State state = state(p, plans.get(Math.max(0, day - 1)), minuteOfDay);
-			Scenario scenario = scenarioAt(scenarios, at);
+			Placed active = placedAt(placed, at);
+			Scenario scenario = active == null ? Scenario.NORMAL : active.window().scenario();
+			if (scenario != Scenario.FROZEN_SENSOR) {
+				frozenTemp = null;                               // each frozen window freezes at its own first value
+				frozenHum = null;
+			}
 
 			// ---- connectivity ----
 			boolean shouldBeOnline = scenario != Scenario.DISCONNECTION && !inOutage(outages, startMin + m);
@@ -173,6 +204,20 @@ public final class SyntheticGenerator {
 					h = null;
 					g = null;
 				}
+				case SPIKE, SUDDEN_DROP, GRADUAL_DRIFT, ABNORMAL_GAS -> {
+					Effect e = active.effect();
+					double share = 1;
+					if (e.ramp()) {                              // grows linearly from 0 to the full amplitude
+						long total = Duration.between(active.window().from(), active.window().to()).toMinutes();
+						share = (Duration.between(active.window().from(), at).toMinutes() + 1) / (double) total;
+					}
+					double offset = e.amplitude() * share;
+					switch (e.metric()) {
+						case TEMPERATURE -> t = t == null ? null : round1(t + offset);
+						case HUMIDITY -> h = h == null ? null : round1(clamp(h + offset, 0, 100));
+						case GAS -> g = g == null ? null : (int) Math.round(clamp(g + offset, 0, 4095));
+					}
+				}
 				default -> {
 				}
 			}
@@ -210,31 +255,95 @@ public final class SyntheticGenerator {
 		return State.ACTIVE;
 	}
 
-	// ---- labelled anomaly scenarios (all in the last days, i.e. in the test period) ------------
+	// ---- labelled anomaly scenarios (validation and test periods only, never training) --------
 
-	private static List<ScenarioWindow> scenarios(LocalDate firstDay, int days, ZoneId zone) {
-		List<ScenarioWindow> s = new ArrayList<>();
-		s.add(window(Scenario.FROZEN_SENSOR, firstDay.plusDays(days - 5), 10, 0, 120, zone,
-				"DHT22 temperature and humidity frozen at one value for 2 hours"));
-		s.add(window(Scenario.GAS_SATURATION, firstDay.plusDays(days - 4), 14, 0, 15, zone, "MQ-2 ADC pinned at 4095 for 15 minutes"));
-		s.add(window(Scenario.MISSING_VALUES, firstDay.plusDays(days - 3), 16, 0, 40, zone,
-				"device keeps reporting but sends no temperature, humidity or gas for 40 minutes"));
-		s.add(window(Scenario.DISCONNECTION, firstDay.plusDays(days - 2), 2, 0, 50, zone, "device offline for 50 minutes"));
-		// Unusual motion on the last weekday night: someone moving at 03:15, when the household is normally asleep.
-		LocalDate d = firstDay.plusDays(days - 1);
-		while (d.getDayOfWeek() == DayOfWeek.SATURDAY || d.getDayOfWeek() == DayOfWeek.SUNDAY) {
-			d = d.minusDays(1);
+	/** Start of the validation period: after the training part and the embargo (same split as {@link SyntheticTrainer}). */
+	public static Instant validationStart(Instant start, int days) {
+		return start.plusSeconds((long) (days * 86_400L * SyntheticTrainer.TRAIN_FRACTION)).plus(SyntheticTrainer.EMBARGO);
+	}
+
+	public static Instant validationEnd(Instant start, int days) {
+		return start.plusSeconds((long) (days * 86_400L * (SyntheticTrainer.TRAIN_FRACTION + SyntheticTrainer.VALIDATION_FRACTION)));
+	}
+
+	public static Instant testStart(Instant start, int days) {
+		return validationEnd(start, days).plus(SyntheticTrainer.EMBARGO);
+	}
+
+	/** Which set a window belongs to, by where it starts. */
+	public static LabelSet setOf(Dataset ds, ScenarioWindow w) {
+		return w.from().isBefore(validationEnd(ds.start(), ds.days())) ? LabelSet.VALIDATION : LabelSet.TEST;
+	}
+
+	/**
+	 * Two days of scenarios at the start of each period: the first two local days that start inside it. The rest of
+	 * each period stays normal, which is where false alarms are counted. Windows are hours apart, so the condition
+	 * checks (stuck, missing) and their grace periods never run into the next scenario.
+	 */
+	private static List<Placed> layout(Instant start, int days, ZoneId zone) {
+		List<Placed> s = new ArrayList<>();
+		LocalDate v = firstDayStartingAt(validationStart(start, days), zone);
+		LocalDate t = firstDayStartingAt(testStart(start, days), zone);
+		if (!v.plusDays(2).atStartOfDay(zone).toInstant().isAfter(validationEnd(start, days))
+				&& !t.plusDays(2).atStartOfDay(zone).toInstant().isAfter(start.plus(Duration.ofDays(days)))) {
+			s.addAll(set(v, zone, "validation",
+					new Effect(Metric.TEMPERATURE, 6.0, false), "temperature jumps by +6 °C for 8 minutes",
+					new Effect(Metric.HUMIDITY, -20.0, false), "humidity drops by 20 points for 30 minutes",
+					new Effect(Metric.TEMPERATURE, 4.0, true), "temperature reading drifts upward to +4 °C over 6 hours (calibration drift)",
+					new Effect(Metric.GAS, 450, true), "MQ-2 rises to about +450 raw above normal over 25 minutes, still below the gas alert threshold"));
+			s.addAll(set(t, zone, "test",
+					new Effect(Metric.HUMIDITY, 18.0, false), "humidity jumps by +18 points for 8 minutes",
+					new Effect(Metric.TEMPERATURE, -5.0, false), "temperature drops by 5 °C for 30 minutes",
+					new Effect(Metric.HUMIDITY, 15.0, true), "humidity reading drifts upward to +15 points over 6 hours (calibration drift)",
+					new Effect(Metric.GAS, 350, true), "MQ-2 rises to about +350 raw above normal over 25 minutes, still below the gas alert threshold"));
 		}
-		s.add(window(Scenario.UNUSUAL_MOTION, d, 3, 15, 15, zone, "repeated motion at 03:15 on a weekday night, normally quiet"));
+		s.sort((a, b) -> a.window().from().compareTo(b.window().from()));
 		return s;
 	}
 
-	private static ScenarioWindow window(Scenario sc, LocalDate day, int hour, int minute, int minutes, ZoneId zone, String text) {
-		Instant from = day.atTime(hour, minute).atZone(zone).toInstant();
-		return new ScenarioWindow(sc, from, from.plus(Duration.ofMinutes(minutes)), text);
+	private static LocalDate firstDayStartingAt(Instant at, ZoneId zone) {
+		LocalDate d = at.atZone(zone).toLocalDate();
+		return d.atStartOfDay(zone).toInstant().isBefore(at) ? d.plusDays(1) : d;
 	}
 
-	private static Scenario scenarioAt(List<ScenarioWindow> windows, Instant at) {
+	private static List<Placed> set(LocalDate a, ZoneId zone, String set, Effect spike, String spikeText, Effect drop, String dropText,
+			Effect drift, String driftText, Effect gas, String gasText) {
+		LocalDate b = a.plusDays(1);
+		List<Placed> s = new ArrayList<>();
+		// Unusual motion needs a weekday night (the routine is quiet at 03:15 then).
+		boolean aWeekday = a.getDayOfWeek() != DayOfWeek.SATURDAY && a.getDayOfWeek() != DayOfWeek.SUNDAY;
+		LocalDate motionDay = aWeekday ? a : b;
+		boolean weekdayNight = motionDay.getDayOfWeek() != DayOfWeek.SATURDAY && motionDay.getDayOfWeek() != DayOfWeek.SUNDAY;
+		s.add(placed(Scenario.UNUSUAL_MOTION, motionDay, 3, 15, 15, zone, null,
+				"repeated motion at 03:15 on a " + (weekdayNight ? "weekday" : "weekend") + " night, normally quiet (" + set + ")"));
+		s.add(placed(Scenario.SPIKE, a, 7, 0, 8, zone, spike, spikeText + " (" + set + ")"));
+		s.add(placed(Scenario.FROZEN_SENSOR, a, 9, 0, 120, zone, null, "DHT22 temperature and humidity frozen at one value for 2 hours (" + set + ")"));
+		s.add(placed(Scenario.GAS_SATURATION, a, 13, 0, 15, zone, null, "MQ-2 ADC pinned at 4095 for 15 minutes (" + set + ")"));
+		s.add(placed(Scenario.GRADUAL_DRIFT, a, 15, 0, 360, zone, drift, driftText + " (" + set + ")"));
+		s.add(placed(Scenario.DISCONNECTION, b, 0, 30, 50, zone, null, "device offline for 50 minutes (" + set + ")"));
+		s.add(placed(Scenario.MISSING_VALUES, b, 7, 30, 40, zone, null,
+				"device keeps reporting but sends no temperature, humidity or gas for 40 minutes (" + set + ")"));
+		s.add(placed(Scenario.SUDDEN_DROP, b, 12, 0, 30, zone, drop, dropText + " (" + set + ")"));
+		s.add(placed(Scenario.ABNORMAL_GAS, b, 18, 0, 25, zone, gas, gasText + " (" + set + ")"));
+		return s;
+	}
+
+	private static Placed placed(Scenario sc, LocalDate day, int hour, int minute, int minutes, ZoneId zone, Effect effect, String text) {
+		Instant from = day.atTime(hour, minute).atZone(zone).toInstant();
+		return new Placed(new ScenarioWindow(sc, from, from.plus(Duration.ofMinutes(minutes)), text), effect);
+	}
+
+	private static Placed placedAt(List<Placed> placed, Instant at) {
+		for (Placed p : placed) {
+			if (!at.isBefore(p.window().from()) && at.isBefore(p.window().to())) {
+				return p;
+			}
+		}
+		return null;
+	}
+
+	/** The labelled scenario a minute belongs to (NORMAL outside every window). */
+	public static Scenario scenarioAt(List<ScenarioWindow> windows, Instant at) {
 		for (ScenarioWindow w : windows) {
 			if (!at.isBefore(w.from()) && at.isBefore(w.to())) {
 				return w.scenario();

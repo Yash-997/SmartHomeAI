@@ -27,6 +27,11 @@ public interface MlSampleRepository extends Repository<TelemetryReading, Long> {
 			+ "where r.deviceUuid = :device and r.receivedAt >= :from and r.receivedAt < :to order by r.receivedAt desc, r.id desc")
 	List<SensorSample> findSensorSamples(@Param("device") UUID device, @Param("from") Instant from, @Param("to") Instant to, Pageable page);
 
+	/** Newest first, within [from, to): every sensor the anomaly model uses. */
+	@Query("select new com.smarthome.ml.TelemetryPoint(r.receivedAt, r.temperatureC, r.humidityPct, r.gasRaw, r.motion) from TelemetryReading r "
+			+ "where r.deviceUuid = :device and r.receivedAt >= :from and r.receivedAt < :to order by r.receivedAt desc, r.id desc")
+	List<TelemetryPoint> findTelemetryPoints(@Param("device") UUID device, @Param("from") Instant from, @Param("to") Instant to, Pageable page);
+
 	@Query("select count(r) from TelemetryReading r where r.deviceUuid = :device and r.motion is not null")
 	long countMotionSamples(@Param("device") UUID device);
 

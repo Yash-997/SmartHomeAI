@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.smarthome.ml.MlDtos.AnomalyModelStatusResponse;
 import com.smarthome.ml.MlDtos.AnomalyResponse;
 import com.smarthome.ml.MlDtos.ConnectivityResponse;
 import com.smarthome.ml.MlDtos.PatternResponse;
@@ -41,8 +42,11 @@ public class MlController {
 	private final AnomalyService anomalies;
 	private final AnomalyScanner scanner;
 	private final DataCollectionService collection;
+	private final AnomalyModelService anomalyModels;
 
-	public MlController(OccupancyService occupancy, AnomalyService anomalies, AnomalyScanner scanner, DataCollectionService collection) {
+	public MlController(OccupancyService occupancy, AnomalyService anomalies, AnomalyScanner scanner, DataCollectionService collection,
+			AnomalyModelService anomalyModels) {
+		this.anomalyModels = anomalyModels;
 		this.occupancy = occupancy;
 		this.anomalies = anomalies;
 		this.scanner = scanner;
@@ -110,6 +114,18 @@ public class MlController {
 	public AnomalyResponse resolve(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId, @PathVariable UUID anomalyId,
 			@Valid @RequestBody ResolveRequest req) {
 		return anomalies.resolve(userId(jwt), deviceId, anomalyId, req.status(), req.note());
+	}
+
+	/** The Isolation Forest anomaly models (real-data and synthetic), with their evaluation. */
+	@GetMapping("/anomaly-model")
+	public AnomalyModelStatusResponse anomalyModel(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId) {
+		return anomalyModels.status(userId(jwt), deviceId);
+	}
+
+	/** Retrains the Isolation Forest on this device's real telemetry now (it also retrains itself about once a day). */
+	@PostMapping("/anomaly-model/train")
+	public AnomalyModelStatusResponse trainAnomalyModel(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId) {
+		return anomalyModels.trainManually(userId(jwt), deviceId);
 	}
 
 	/** Runs an anomaly check over the last hour right now. */

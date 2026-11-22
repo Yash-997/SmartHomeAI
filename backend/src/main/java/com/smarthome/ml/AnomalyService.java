@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -93,6 +94,7 @@ public class AnomalyService {
 				severity = AnomalySeverity.CRITICAL;
 			}
 			a.seenAgain(severity, f.explanation(), details, f.readingAt(), now);
+			measure(a, f);
 			MlAnomaly saved = anomalies.save(a);
 			if (saved.getSeverity().ordinal() > before.ordinal()) {
 				published(saved, false);              // got worse: may now reach the email severity
@@ -104,7 +106,9 @@ public class AnomalyService {
 				&& dismissed.get().getResolvedAt().isAfter(now.minus(props.anomaly().suppressAfterDismissMinutes(), ChronoUnit.MINUTES))) {
 			return Optional.empty();
 		}
-		MlAnomaly saved = anomalies.save(new MlAnomaly(deviceUuid, f.kind(), f.scope(), f.severity(), f.explanation(), details, f.readingAt(), now));
+		MlAnomaly created = new MlAnomaly(deviceUuid, f.kind(), f.scope(), f.severity(), f.explanation(), details, f.readingAt(), now);
+		measure(created, f);
+		MlAnomaly saved = anomalies.save(created);
 		published(saved, true);
 		return Optional.of(saved);
 	}
@@ -114,6 +118,16 @@ public class AnomalyService {
 	 * the history never depends on a listener; a failing listener is logged and ignored, detection carries on.
 	 */
 	private void published(MlAnomaly a, boolean isNew) {
+		publishedEvent(a, isNew);
+	}
+
+	/** Stores the measured value and normal range as numbers, from the same details the explanation was written from. */
+	private static void measure(MlAnomaly a, Finding f) {
+		AnomalyFacts.Numbers n = AnomalyFacts.numbers(f.kind(), f.details() == null ? Map.of() : f.details());
+		a.measured(n.value(), n.low(), n.high());
+	}
+
+	private void publishedEvent(MlAnomaly a, boolean isNew) {
 		try {
 			events.publishEvent(new AnomalyRaisedEvent(a.getId(), a.getDeviceUuid(), a.getSeverity(), isNew));
 		} catch (RuntimeException e) {
@@ -148,7 +162,8 @@ public class AnomalyService {
 		Instant cutoff = now.minus(props.anomaly().autoResolveMinutes(), ChronoUnit.MINUTES);
 		for (MlAnomaly a : anomalies.findByDeviceUuidAndStatusInAndLastSeenAtBefore(deviceUuid, ACTIVE, cutoff)) {
 			if (a.getKind() == AnomalyKind.STATISTICAL_OUTLIER || a.getKind() == AnomalyKind.OUT_OF_RANGE
-					|| a.getKind() == AnomalyKind.SUDDEN_CHANGE || a.getKind() == AnomalyKind.UNUSUAL_ACTIVITY) {
+					|| a.getKind() == AnomalyKind.SUDDEN_CHANGE || a.getKind() == AnomalyKind.UNUSUAL_ACTIVITY
+					|| a.getKind() == AnomalyKind.MULTIVARIATE_OUTLIER) {
 				a.close(AnomalyStatus.AUTO_RESOLVED, "Not seen again for " + props.anomaly().autoResolveMinutes() + " minutes.", now);
 				anomalies.save(a);
 			}
@@ -222,6 +237,7 @@ public class AnomalyService {
 		}
 		return new AnomalyResponse(a.getId(), a.getKind(), a.getScope(), a.getSeverity(), a.getStatus(), a.getExplanation(), details,
 				a.getDetectedAt(), a.getLastSeenAt(), a.getOccurrences(), a.getReadingAt(), a.getResolvedAt(), a.getResolutionNote(),
-				a.getEmailStatus(), a.getEmailAt(), a.getEmailError());
+				a.getEmailStatus(), a.getEmailAt(), a.getEmailError(), a.getKind().detector(), a.getDetectedValue(), a.getExpectedLow(),
+				a.getExpectedHigh());
 	}
 }

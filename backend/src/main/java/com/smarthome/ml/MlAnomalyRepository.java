@@ -34,6 +34,9 @@ public interface MlAnomalyRepository extends JpaRepository<MlAnomaly, UUID> {
 
 	long countByDeviceUuidAndStatusIn(UUID deviceUuid, Collection<AnomalyStatus> statuses);
 
+	/** Anomalies still going on at or after {@code since} (to leave their minutes out of anomaly-model training). */
+	List<MlAnomaly> findByDeviceUuidAndLastSeenAtAfter(UUID deviceUuid, Instant since);
+
 	long countByDeviceUuidAndStatusInAndSeverity(UUID deviceUuid, Collection<AnomalyStatus> statuses, AnomalySeverity severity);
 
 	@Modifying

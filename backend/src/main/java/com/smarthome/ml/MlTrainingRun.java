@@ -130,6 +130,33 @@ public class MlTrainingRun {
 		this.metricsJson = metricsJson;
 	}
 
+	/** An anomaly-model run. Counts are in minutes: training minutes, and minutes left out of training. */
+	public MlTrainingRun(UUID deviceUuid, String modelType, DataSource dataSource, UUID datasetId, Integer version, Trigger trigger,
+			OccupancyTrainer.Status status, String message, boolean becameCurrent, String zone, String featureSet, Instant trainedAt, long durationMs,
+			Instant dataFrom, Instant dataTo, int samples, int trainingMinutes, int excludedMinutes, int distinctDays, String metricsJson) {
+		this.id = UUID.randomUUID();
+		this.deviceUuid = deviceUuid;
+		this.modelType = modelType;
+		this.dataSource = dataSource;
+		this.datasetId = datasetId;
+		this.version = version;
+		this.trigger = trigger;
+		this.status = status;
+		this.reason = message == null ? null : message.substring(0, Math.min(400, message.length()));
+		this.becameCurrent = becameCurrent;
+		this.timeZone = zone;
+		this.featureSet = featureSet.substring(0, Math.min(120, featureSet.length()));
+		this.trainedAt = trainedAt;
+		this.durationMs = durationMs;
+		this.dataFrom = dataFrom;
+		this.dataTo = dataTo;
+		this.samples = samples;
+		this.labeledBuckets = trainingMinutes;
+		this.positiveBuckets = excludedMinutes;
+		this.distinctDays = distinctDays;
+		this.metricsJson = metricsJson;
+	}
+
 	public UUID getId() { return id; }
 	public UUID getDeviceUuid() { return deviceUuid; }
 	public Integer getVersion() { return version; }
