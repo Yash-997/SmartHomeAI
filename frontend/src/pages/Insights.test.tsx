@@ -1,6 +1,6 @@
 // The ML Insights page must always render: with no model, with an empty history, and even against an older backend
 // that does not send the newer fields. The backend is mocked; nothing here is real data.
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -12,10 +12,6 @@ const apiMock = vi.hoisted(() => ({
   mlStatus: vi.fn(),
   connectivity: vi.fn(),
   anomalies: vi.fn(),
-  trainingRuns: vi.fn(),
-  predictNow: vi.fn(),
-  forecast: vi.fn(),
-  occupancyPattern: vi.fn(),
   syntheticStatus: vi.fn(),
   generateSynthetic: vi.fn(),
   trainSynthetic: vi.fn(),
@@ -42,31 +38,24 @@ const TRAINED_SYNTHETIC = {
 vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), api: apiMock }))
 vi.mock('../auth', () => ({ useAuth: () => ({ user: { username: 'tester' }, logout: () => {} }) }))
 
-const requirements = { slotMinutes: 15, minReadingsPerSlot: 10, minUsableSlots: 200, minDistinctDays: 3, minSlotsPerClass: 20 }
-
-/** Exactly what the backend sent before the history pipeline (no dataset, no versions). */
-const OLD_BACKEND_STATUS = {
-  occupancy: {
-    state: 'INSUFFICIENT_DATA', predictionsAvailable: false, message: 'Only 12 usable 15-minute slots so far.', trainedAt: '2026-11-10T10:00:00Z',
-    timeZone: 'UTC', counts: { motionReadings: 300, usableSlots: 12, slotsWithMotion: 3, slotsWithoutMotion: 9, sparseSlotsIgnored: 2, distinctDays: 1, dataFrom: null, dataTo: null },
-    requirements, metrics: null, data: { motionReadings: 300, firstAt: '2026-11-10T08:00:00Z', lastAt: '2026-11-10T10:00:00Z' }, method: 'Logistic regression',
-  },
-  anomalies: { active: 0, critical: 0, warning: 0, info: 0, lastScanAt: null },
+const LABEL = 'DATA SOURCE: SYNTHETIC DEMONSTRATION DATA'
+const status = (occupancy: object) => ({
+  occupancy,
+  anomalies: { active: 2, critical: 0, warning: 2, info: 0, lastScanAt: null },
   notice: 'ML insights are advisory.',
-}
+})
+const READY = status({
+  state: 'READY', dataLabel: LABEL, version: 3, trainedAt: '2026-11-11T00:00:00Z', trainingRows: 8501, trainingDays: 30,
+  dataset: { records: 42750, days: 30, seed: 42, from: '2026-10-12T18:30:00Z', to: '2026-11-11T18:30:00Z', arrivals: 21, departures: 21, offlineMinutes: 450, timeZone: 'Asia/Kolkata' },
+  algorithms: { 'Occupancy now': 'LOGISTIC_REGRESSION' }, message: 'Trained on 30 days of synthetic data.',
+})
+const PREPARING = status({ state: 'PREPARING', dataLabel: LABEL, version: 0, trainedAt: null, trainingRows: 0, trainingDays: 0, dataset: null, algorithms: {}, message: 'The synthetic dataset and model are being prepared.' })
 
-/** The current backend for a device that has stored nothing yet. */
-const EMPTY_NEW_STATUS = {
-  occupancy: {
-    state: 'NOT_TRAINED', predictionsAvailable: false, message: 'Collecting historical data. Nothing is predicted until there is enough real history to learn from.',
-    trainedAt: null, timeZone: null, counts: null, requirements, metrics: null,
-    data: { totalRecords: 0, collectionStartedAt: null, recordsLast24h: 0, motionReadings: 0, firstAt: null, lastAt: null,
-      dataset: { usableSlots: 0, slotsWithMotion: 0, slotsWithoutMotion: 0, sparseSlotsIgnored: 0, distinctDays: 0, enoughForTraining: false, checkedAt: '2026-11-11T08:00:00Z' } },
-    method: 'Logistic regression', collecting: true, modelVersion: 0, lastSuccessfulTrainingAt: null, trainingRuns: 0, featureSet: 'v2', autoTraining: true,
-  },
-  anomalies: { active: 0, critical: 0, warning: 0, info: 0, lastScanAt: null },
-  notice: 'ML insights are advisory.',
-}
+const predict = vi.hoisted(() => vi.fn())
+vi.mock('../predictive', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../predictive')>()
+  return { ...real, predictiveApi: { ...real.predictiveApi, now: predict } }
+})
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -74,8 +63,10 @@ beforeEach(() => {
   apiMock.recommendations.mockResolvedValue({ recommendations: [], notes: [], generatedAt: '2026-11-11T10:00:00Z' })
   apiMock.connectivity.mockResolvedValue({ currentState: 'ONLINE', offlineEventsLast7Days: 0, events: [] })
   apiMock.anomalies.mockResolvedValue([])
-  apiMock.trainingRuns.mockResolvedValue([])
   apiMock.syntheticStatus.mockResolvedValue(NO_SYNTHETIC)
+  predict.mockReset()
+  predict.mockResolvedValue({ at: '2026-11-11T13:30:00', timeZone: 'Asia/Kolkata', modelVersion: 3, dataLabel: LABEL,
+    presence: { probability: 0.04, state: 'LIKELY_EMPTY', confidence: 0.96 } })
 })
 
 function renderPage() {
@@ -83,60 +74,42 @@ function renderPage() {
 }
 
 describe('ML Insights page', () => {
-  it('renders "Collecting historical data" when nothing has been collected, and predicts nothing', async () => {
-    apiMock.mlStatus.mockResolvedValue(EMPTY_NEW_STATUS)
-    renderPage()
-    expect(await screen.findByRole('heading', { name: /^Historical data/ })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: /^Occupancy prediction/ })).toBeInTheDocument()
-    expect(screen.getAllByText('Collecting historical data').length).toBeGreaterThan(0)
-    expect(apiMock.predictNow).not.toHaveBeenCalled()
-    expect(apiMock.occupancyPattern).not.toHaveBeenCalled()
+  it('has three cards: no data collection card, counter or 200-slot messaging', async () => {
+    apiMock.mlStatus.mockResolvedValue(READY)
+    const { container } = renderPage()
+    expect(await screen.findByText('Likely away')).toBeInTheDocument()
+    for (const gone of [/data collection/i, /collecting historical data/i, /usable 15-minute slots/i, /\/ 200/, /at least 200/i, /too one-sided/i]) {
+      expect(container.textContent).not.toMatch(gone)
+    }
+    expect(screen.queryByRole('progressbar')).toBeNull()
+    expect(screen.getByText('Occupancy model')).toBeInTheDocument()
+    expect(screen.getByText('Occupancy now')).toBeInTheDocument()
+    expect(screen.getAllByText('Anomalies').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Open anomaly history' })).toBeInTheDocument()
   })
 
-  it('still renders against an older backend that does not send the new fields', async () => {
-    apiMock.mlStatus.mockResolvedValue(OLD_BACKEND_STATUS)
+  it('shows the model details the server reported and labels the data as synthetic', async () => {
+    apiMock.mlStatus.mockResolvedValue(READY)
     renderPage()
-    expect(await screen.findByRole('heading', { name: /^Occupancy prediction/ })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: /^Historical data/ })).toBeInTheDocument()
-    expect(screen.getByText(/did not report the training dataset/)).toBeInTheDocument()
-    expect(screen.getByText('12 / 200 needed')).toBeInTheDocument()   // readiness falls back to the last run's real counts
-    expect(screen.queryByText(/could not be displayed/)).not.toBeInTheDocument()
+    expect(await screen.findByText(LABEL)).toBeInTheDocument()
+    expect(screen.getByText('8,501 from 30 days')).toBeInTheDocument()
+    expect(screen.getByText('v3')).toBeInTheDocument()
+    expect(screen.getByText('Synthetic demonstration data')).toBeInTheDocument()
+    expect(await screen.findByText(/4% probability of being home/)).toBeInTheDocument()
+    expect(screen.getByText('Ready')).toBeInTheDocument()
   })
 
-  it('shows predictions even when the learned-pattern request fails', async () => {
-    apiMock.mlStatus.mockResolvedValue({
-      ...EMPTY_NEW_STATUS,
-      occupancy: { ...EMPTY_NEW_STATUS.occupancy, state: 'READY', predictionsAvailable: true, collecting: false, modelVersion: 2, trainedAt: '2026-11-11T00:00:00Z', timeZone: 'Asia/Kolkata', message: 'Trained.' },
-    })
-    apiMock.predictNow.mockResolvedValue({ at: '2026-11-11T08:00:00Z', localTime: '2026-11-11T13:30', dayOfWeek: 'Wed', hour: 13, probability: 0.2, predictedOccupied: false, confidence: 0.8, support: 6, reliable: true, observedRate: 0.17, quality: 'READY' })
-    apiMock.forecast.mockResolvedValue({ timeZone: 'Asia/Kolkata', quality: 'READY', points: [] })
-    apiMock.occupancyPattern.mockRejectedValue(new Error('404'))
+  it('predicts and reports nothing while the model is being prepared', async () => {
+    apiMock.mlStatus.mockResolvedValue(PREPARING)
     renderPage()
-    expect(await screen.findByText(/quiet likely/)).toBeInTheDocument()
-    expect(screen.getByText('Model v2')).toBeInTheDocument()
-  })
-
-  it('keeps real and synthetic apart: real data still collecting, synthetic model clearly labelled', async () => {
-    apiMock.mlStatus.mockResolvedValue(EMPTY_NEW_STATUS)
-    apiMock.syntheticStatus.mockResolvedValue(TRAINED_SYNTHETIC)
-    apiMock.syntheticForecast.mockResolvedValue({ source: 'SYNTHETIC', notice: NOTICE, modelVersion: 1, timeZone: 'Asia/Kolkata',
-      points: [{ at: '2026-11-11T10:00:00Z', localTime: '2026-11-11T15:30', dayOfWeek: 'Wed', hour: 15, probability: 0.3, predictedOccupied: false, confidence: 0.7, support: 16, reliable: true, observedRate: 0.25, quality: 'SYNTHETIC' }] })
-    renderPage()
-    const synthetic = await screen.findByRole('region', { name: /Synthetic demonstration model/ })
-    // Real side: no model, still collecting, nothing predicted from real data.
-    expect(screen.getAllByText('Collecting historical data').length).toBeGreaterThan(0)
-    expect(apiMock.predictNow).not.toHaveBeenCalled()
-    // Synthetic side: labelled, with its own numbers and a disclaimer.
-    expect(await within(synthetic).findByText('42,926')).toBeInTheDocument()   // wait for the synthetic status
-    expect(within(synthetic).getAllByText('SYNTHETIC').length).toBeGreaterThan(1)
-    expect(within(synthetic).getByText(/not your home's history/)).toBeInTheDocument()
-    expect(within(synthetic).getByText(/Beats the "always guess the average" baseline/)).toBeInTheDocument()
-    expect(await within(synthetic).findByRole('img', { name: /Synthetic model forecast/ })).toBeInTheDocument()
-    expect(within(synthetic).getByText(/False alarms in 128 hours/)).toBeInTheDocument()
+    expect(await screen.findByText('Preparing')).toBeInTheDocument()
+    expect(screen.getByText('No prediction yet.')).toBeInTheDocument()
+    expect(screen.queryByText('Last trained')).toBeNull()
+    expect(predict).not.toHaveBeenCalled()
   })
 
   it('never generates synthetic data by itself; only the button does', async () => {
-    apiMock.mlStatus.mockResolvedValue(EMPTY_NEW_STATUS)
+    apiMock.mlStatus.mockResolvedValue(READY)
     apiMock.generateSynthetic.mockResolvedValue({ ...TRAINED_SYNTHETIC, model: null, training: null, anomalies: null, generated: true })
     renderPage()
     const button = await screen.findByRole('button', { name: 'Generate 30-day synthetic dataset' })

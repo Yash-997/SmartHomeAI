@@ -17,6 +17,8 @@ import tools.jackson.databind.JsonNode;
 /** The authenticated status view: every part is derived from real state, and a part that cannot be read is reported instead of hidden. */
 class SystemStatusTests extends IntelTestBase {
 
+	@org.springframework.beans.factory.annotation.Autowired com.smarthome.predict.PredictiveModelService predictive;
+
 	@Autowired ScriptedLlm llm;
 	@Autowired ToggleRagChunkStore ragStore;
 
@@ -51,6 +53,7 @@ class SystemStatusTests extends IntelTestBase {
 
 	@Test
 	void aHealthySetupReportsOkWithEveryPartFilledIn() throws Exception {
+		predictive.current();
 		String t = newUserToken();
 		Paired p = onlineNamed(t, "Healthy");
 		fullReading(p, 810_001);
@@ -66,7 +69,7 @@ class SystemStatusTests extends IntelTestBase {
 		}
 		assertTrue(s.get("commands").get("failureRate").isNull(), "no commands: no rate, not 0%");
 		assertEquals(0, s.get("commands").get("total").asInt());
-		assertEquals("NOT_TRAINED", s.get("ml").get(0).get("occupancyState").asString());
+		assertEquals("READY", s.get("ml").get(0).get("occupancyState").asString());
 		assertTrue(s.get("assistant").get("modelConfigured").asBoolean());
 		assertEquals("OK", s.get("assistant").get("level").asString());
 		assertTrue(s.get("assistant").get("detail").asString().contains("not called"), "the model is not pinged, and that is stated");
@@ -167,11 +170,10 @@ class SystemStatusTests extends IntelTestBase {
 	}
 
 	@Test
-	void mlReadinessShowsTheRealModelState() throws Exception {
+	void mlReadinessShowsTheSyntheticPredictiveModel() throws Exception {
 		String t = newUserToken();
-		Paired p = onlineNamed(t, "Learner");
-		seedMotionHistory(p, Instant.now(), 21, 7);
-		occupancy.trainManually(p.userId(), p.uuid(), "UTC");
+		onlineNamed(t, "Learner");
+		predictive.current();
 
 		JsonNode ml = view(t).get("ml").get(0);
 		assertEquals("READY", ml.get("occupancyState").asString());

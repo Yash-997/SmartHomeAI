@@ -19,13 +19,18 @@ public final class LogisticRegression {
 	}
 
 	public static Fit fit(double[][] x, int[] y, double lambda, int maxIterations) {
+		return fit(x, y, null, lambda, maxIterations);
+	}
+
+	/** As above with one non-negative weight per row ({@code null} = every row counts 1). */
+	public static Fit fit(double[][] x, int[] y, double[] rowWeights, double lambda, int maxIterations) {
 		if (x.length == 0 || x.length != y.length) {
 			throw new IllegalArgumentException("need one label per row and at least one row");
 		}
 		int d = x[0].length;
 		int k = d + 1;
 		double[] w = new double[k];
-		double current = penalisedLogLikelihood(x, y, w, lambda);
+		double current = penalisedLogLikelihood(x, y, rowWeights, w, lambda);
 		boolean converged = false;
 		int iterations = 0;
 		for (int it = 1; it <= maxIterations; it++) {
@@ -34,8 +39,9 @@ public final class LogisticRegression {
 			double[][] h = new double[k][k];
 			for (int i = 0; i < x.length; i++) {
 				double p = sigmoid(linear(w, x[i]));
-				double r = y[i] - p;
-				double s = Math.max(p * (1 - p), 1e-9);
+				double rowWeight = rowWeights == null ? 1 : rowWeights[i];
+				double r = rowWeight * (y[i] - p);
+				double s = rowWeight * Math.max(p * (1 - p), 1e-9);
 				g[0] += r;
 				h[0][0] += s;
 				for (int j = 0; j < d; j++) {
@@ -69,7 +75,7 @@ public final class LogisticRegression {
 				for (int j = 0; j < k; j++) {
 					c[j] = w[j] + scale * step[j];
 				}
-				double v = penalisedLogLikelihood(x, y, c, lambda);
+				double v = penalisedLogLikelihood(x, y, rowWeights, c, lambda);
 				if (v >= current - 1e-12) {
 					candidate = c;
 					candidateValue = v;
@@ -118,11 +124,15 @@ public final class LogisticRegression {
 
 	/** sum(y*z - log(1+e^z)) - lambda/2 * sum(w_j^2, j >= 1), computed without overflow. */
 	static double penalisedLogLikelihood(double[][] x, int[] y, double[] w, double lambda) {
+		return penalisedLogLikelihood(x, y, null, w, lambda);
+	}
+
+	private static double penalisedLogLikelihood(double[][] x, int[] y, double[] rowWeights, double[] w, double lambda) {
 		double ll = 0;
 		for (int i = 0; i < x.length; i++) {
 			double z = linear(w, x[i]);
 			double log1pExp = z > 0 ? z + Math.log1p(Math.exp(-z)) : Math.log1p(Math.exp(z));
-			ll += y[i] * z - log1pExp;
+			ll += (rowWeights == null ? 1 : rowWeights[i]) * (y[i] * z - log1pExp);
 		}
 		double penalty = 0;
 		for (int j = 1; j < w.length; j++) {

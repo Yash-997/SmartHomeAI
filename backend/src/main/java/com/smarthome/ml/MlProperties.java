@@ -69,7 +69,7 @@ public record MlProperties(@DefaultValue Occupancy occupancy, @DefaultValue Trai
 			@DefaultValue("28") int windowDays,
 			/** Safety cap on rows loaded for one training run. */
 			@DefaultValue("150000") int maxSamples,
-			@DefaultValue("200") int minLabeledBuckets,
+			
 			@DefaultValue("3") int minDistinctDays,
 			/** Both "occupied" and "unoccupied" slots are needed, at least this many of each. */
 			@DefaultValue("20") int minClassBuckets,
@@ -159,7 +159,7 @@ public record MlProperties(@DefaultValue Occupancy occupancy, @DefaultValue Trai
 		return with(Map.of());
 	}
 
-	/** Defaults plus overrides given as {@code app.ml.occupancy.min-labeled-buckets} style keys. */
+	/** Defaults plus overrides given as {@code app.ml.occupancy.min-distinct-days} style keys. */
 	public static MlProperties with(Map<String, String> overrides) {
 		return new Binder(new MapConfigurationPropertySource(overrides)).bindOrCreate("app.ml", MlProperties.class);
 	}

@@ -18,7 +18,7 @@ const FEATURES: { title: string; text: string; icon: ReactNode }[] = [
   },
   {
     title: 'Predictive insights',
-    text: 'Occupancy forecasts, weekly patterns and anomaly detection.',
+    text: 'Predictive occupancy on synthetic data, and anomaly detection.',
     icon: <path d="M3 20h18M6 16l4-5 3 3 5-7" />,
   },
   {

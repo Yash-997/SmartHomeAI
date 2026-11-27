@@ -103,6 +103,35 @@ public final class SyntheticGenerator {
 		List<Placed> placed = layout(start, days, zone);
 		List<ScenarioWindow> scenarios = placed.stream().map(Placed::window).toList();
 		List<long[]> outages = outages(start, days, rnd);   // random Wi-Fi outages [fromEpochMin, toEpochMin), early days only
+		return run(start, days, zone, seed, rnd, plans, placed, scenarios, outages, false);
+	}
+
+	/** One day of a caller-defined routine, minutes after local midnight. {@code leave < 0}: at home all day. */
+	public record RoutineDay(int wake, int leave, int back, int sleep) {
+	}
+
+	/**
+	 * The same house, sensors and noise driven by a caller-defined routine, without the labelled anomaly scenarios. Adds
+	 * rare PIR false triggers while nobody is home, so motion never proves presence, and Wi-Fi outages on any day.
+	 */
+	public static Dataset simulate(Instant start, List<RoutineDay> routine, ZoneId zone, long seed) {
+		Random rnd = new Random(seed);
+		int days = routine.size();
+		List<DayPlan> plans = routine.stream()
+				.map(r -> new DayPlan(r.wake(), r.leave(), r.back(), r.sleep(), r.wake() + 20, 19 * 60 + 40, r.leave() < 0)).toList();
+		List<long[]> outages = new ArrayList<>();
+		long startMin = start.getEpochSecond() / 60;
+		for (int i = 0; i < days / 3; i++) {
+			long from = startMin + rnd.nextInt(days * 1440);
+			outages.add(new long[] { from, from + 5 + rnd.nextInt(70) });
+		}
+		return run(start, days, zone, seed, rnd, plans, List.of(), List.of(), outages, true);
+	}
+
+	private static Dataset run(Instant start, int days, ZoneId zone, long seed, Random rnd, List<DayPlan> plans, List<Placed> placed,
+			List<ScenarioWindow> scenarios, List<long[]> outages, boolean falseTriggers) {
+		Instant end = start.plus(Duration.ofDays(days));
+		LocalDate firstDay = start.atZone(zone).toLocalDate();
 
 		List<Reading> out = new ArrayList<>(days * 1440);
 		List<ConnectivityEvent> events = new ArrayList<>();
@@ -166,7 +195,7 @@ public final class SyntheticGenerator {
 			} else if (state == State.ASLEEP) {
 				motion = rnd.nextDouble() < 0.002;
 			} else {
-				motion = false;
+				motion = falseTriggers && rnd.nextDouble() < 0.0006;
 			}
 			if (scenario == Scenario.UNUSUAL_MOTION) {
 				motion = rnd.nextDouble() < 0.7;                 // movement at a time the household is normally asleep

@@ -228,14 +228,6 @@ export interface MlCounts {
   dataTo: string | null
 }
 
-export interface MlRequirements {
-  slotMinutes: number
-  minReadingsPerSlot: number
-  minUsableSlots: number
-  minDistinctDays: number
-  minSlotsPerClass: number
-}
-
 /** Evaluation on the latest slots the evaluation model had not seen. null = not defined, never invented. */
 export interface MlMetrics {
   trainSlots: number
@@ -253,89 +245,18 @@ export interface MlMetrics {
   evaluation: string
 }
 
+/** The shared predictive occupancy model, trained only on the synthetic dataset. */
 export interface OccupancyStatus {
-  state: OccupancyState
-  predictionsAvailable: boolean
-  message: string
+  state: 'PREPARING' | 'READY' | 'UNAVAILABLE'
+  dataLabel: string
+  version: number
   trainedAt: string | null
-  timeZone: string | null
-  counts: MlCounts | null
-  requirements: MlRequirements
-  metrics: MlMetrics | null
-  data: MlDataSummary
-  method: string
-  /** true while there is no usable model: the page shows "Collecting historical data". */
-  collecting: boolean
-  /** 0 before the first model; +1 for every new model. */
-  modelVersion: number
-  lastSuccessfulTrainingAt: string | null
-  trainingRuns: number
-  featureSet: string
-  autoTraining: boolean
-}
-
-/** The training dataset as it would be built now from stored readings (same rules as training). */
-export interface MlDatasetSnapshot {
-  usableSlots: number
-  slotsWithMotion: number
-  slotsWithoutMotion: number
-  sparseSlotsIgnored: number
-  distinctDays: number
-  enoughForTraining: boolean
-  checkedAt: string
-}
-
-/**
- * What has really been collected. totalRecords counts every stored telemetry message. Fields an older backend does not
- * send are null (unknown), never filled in with a guess: see normalizeStatus in insights.ts.
- */
-export interface MlDataSummary {
-  totalRecords: number | null
-  collectionStartedAt: string | null
-  recordsLast24h: number | null
-  motionReadings: number
-  firstAt: string | null
-  lastAt: string | null
-  dataset: MlDatasetSnapshot | null
-}
-
-export interface TrainingRun {
-  id: string
-  /** null when the run produced no model. */
-  version: number | null
-  trigger: 'MANUAL' | 'AUTO'
-  status: 'READY' | 'LOW_QUALITY' | 'INSUFFICIENT_DATA'
-  reason: string | null
-  becameCurrent: boolean
-  trainedAt: string
-  durationMs: number
-  timeZone: string
-  featureSet: string
-  samples: number
-  usableSlots: number
-  slotsWithMotion: number
-  distinctDays: number
-  dataFrom: string | null
-  dataTo: string | null
-  metrics: MlMetrics | null
-}
-
-/** One hour of the learned week. dayOfWeek 1 = Monday ... 7 = Sunday. */
-export interface PatternCell {
-  dayOfWeek: number
-  hour: number
-  slots: number
-  observedRate: number | null
-  modelProbability: number
-}
-
-export interface OccupancyPattern {
-  timeZone: string
-  modelVersion: number
-  quality: string
-  trainedAt: string
-  overallRate: number
-  cells: PatternCell[]
+  /** Training samples (rows) the occupancy classifier was fitted on. */
+  trainingRows: number
+  trainingDays: number
+  dataset: { records: number; days: number; seed: number; from: string; to: string; arrivals: number; departures: number; offlineMinutes: number; timeZone: string } | null
+  algorithms: Record<string, string>
+  message: string
 }
 
 export interface Connectivity {
@@ -1001,21 +922,13 @@ export const api = {
   ruleHistory: (id: string, limit = 30) => request<Execution[]>(`/api/automations/${id}/executions?limit=${limit}`, {}, true),
   allHistory: (limit = 50) => request<Execution[]>(`/api/automations/executions?limit=${limit}`, {}, true),
   mlStatus: (deviceId: string) => request<MlStatus>(`/api/devices/${deviceId}/ml/status`, {}, true),
-  trainOccupancy: (deviceId: string, timeZone: string) =>
-    request<OccupancyStatus>(`/api/devices/${deviceId}/ml/occupancy/train?timeZone=${encodeURIComponent(timeZone)}`, { method: 'POST' }, true),
-  predictNow: (deviceId: string) => request<Prediction>(`/api/devices/${deviceId}/ml/occupancy/predict`, {}, true),
   syntheticStatus: (deviceId: string) => request<SyntheticStatus>(`/api/devices/${deviceId}/ml/synthetic`, {}, true),
   generateSynthetic: (deviceId: string) => request<SyntheticStatus>(`/api/devices/${deviceId}/ml/synthetic/generate`, { method: 'POST' }, true),
   trainSynthetic: (deviceId: string) => request<SyntheticStatus>(`/api/devices/${deviceId}/ml/synthetic/train`, { method: 'POST' }, true),
   syntheticForecast: (deviceId: string, hours = 24) =>
     request<SyntheticForecast>(`/api/devices/${deviceId}/ml/synthetic/forecast?hours=${hours}`, {}, true),
-  trainingRuns: (deviceId: string, limit = 10) =>
-    request<TrainingRun[]>(`/api/devices/${deviceId}/ml/occupancy/runs?limit=${limit}`, {}, true),
-  occupancyPattern: (deviceId: string) => request<OccupancyPattern>(`/api/devices/${deviceId}/ml/occupancy/pattern`, {}, true),
   connectivity: (deviceId: string, limit = 10) =>
     request<Connectivity>(`/api/devices/${deviceId}/ml/connectivity?limit=${limit}`, {}, true),
-  forecast: (deviceId: string, hours = 24) =>
-    request<Forecast>(`/api/devices/${deviceId}/ml/occupancy/forecast?hours=${hours}&stepMinutes=60`, {}, true),
   anomalies: (deviceId: string, status: 'active' | 'all') =>
     request<Anomaly[]>(`/api/devices/${deviceId}/ml/anomalies?status=${status}&limit=100`, {}, true),
   resolveAnomaly: (deviceId: string, id: string, status: 'ACKNOWLEDGED' | 'RESOLVED' | 'DISMISSED', note?: string) =>
@@ -1025,3 +938,7 @@ export const api = {
   disownDevice: (id: string) => request<void>(`/api/devices/${id}`, { method: 'DELETE' }, true),
   health: () => request<{ status: string; service: string; timestamp: string }>('/api/health'),
 }
+
+/** Authenticated JSON call for feature modules that keep their own types (GET, or POST when a body is given). */
+export const authedJson = <T,>(path: string, body?: unknown) =>
+  request<T>(path, body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }, true)
