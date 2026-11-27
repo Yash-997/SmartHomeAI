@@ -29,11 +29,9 @@ import com.smarthome.device.DeviceDtos.TelemetryResponse;
 import com.smarthome.device.DeviceService;
 import com.smarthome.ml.AnomalyService;
 import com.smarthome.ml.MlDtos.AnomalyResponse;
-import com.smarthome.ml.MlDtos.MetricsResponse;
-import com.smarthome.ml.MlDtos.OccupancyStatusResponse;
 import com.smarthome.ml.MlSampleRepository;
 import com.smarthome.ml.MotionSample;
-import com.smarthome.ml.OccupancyService;
+import com.smarthome.predict.PredictiveModelService;
 import com.smarthome.ml.SensorSample;
 import com.smarthome.telemetry.TelemetryRepository;
 
@@ -58,18 +56,18 @@ public class LiveFacts {
 	private final DeviceService deviceService;
 	private final AnomalyService anomalyService;
 	private final AutomationService automationService;
-	private final OccupancyService occupancyService;
+	private final PredictiveModelService predictive;
 	private final MlSampleRepository samples;
 	private final TelemetryRepository telemetry;
 	private final Rag rag;
 	private final Clock clock;
 
 	public LiveFacts(DeviceService deviceService, AnomalyService anomalyService, AutomationService automationService,
-			OccupancyService occupancyService, MlSampleRepository samples, TelemetryRepository telemetry, AssistantProperties props, Clock clock) {
+			PredictiveModelService predictive, MlSampleRepository samples, TelemetryRepository telemetry, AssistantProperties props, Clock clock) {
 		this.deviceService = deviceService;
 		this.anomalyService = anomalyService;
 		this.automationService = automationService;
-		this.occupancyService = occupancyService;
+		this.predictive = predictive;
 		this.samples = samples;
 		this.telemetry = telemetry;
 		this.rag = props.rag();
@@ -314,22 +312,12 @@ public class LiveFacts {
 	// ---- ML ------------------------------------------------------------------------------------
 
 	private List<FactDoc> mlFacts(UUID ownerId, List<DeviceResponse> devices, Map<UUID, String> names, Instant now) {
-		List<FactDoc> docs = new ArrayList<>();
-		for (DeviceResponse d : devices) {
-			String name = names.get(d.id());
-			OccupancyStatusResponse o = occupancyService.status(ownerId, d.id());
-			StringBuilder sb = new StringBuilder("Occupancy prediction model for device \"").append(name).append("\": state ").append(o.state())
-					.append(". ").append(Text.oneLine(o.message(), 400));
-			MetricsResponse m = o.metrics();
-			if (m != null) {
-				sb.append(String.format(Locale.ROOT, " Hold-out accuracy %.1f%% versus %.1f%% for always guessing the average; AUC %s; evaluated on %d unseen slots.",
-						m.accuracy() * 100, m.baselineAccuracy() * 100, m.auc() == null ? "undefined" : String.format(Locale.ROOT, "%.2f", m.auc()), m.testSlots()));
-			} else {
-				sb.append(" There are no accuracy figures because no model has been evaluated.");
-			}
-			docs.add(new FactDoc(ML_MODEL, "ml:" + d.id(), d.id(), "Occupancy model of device " + name, sb.toString(), o.trainedAt() == null ? now : o.trainedAt()));
-		}
-		return docs;
+		var info = predictive.info();
+		StringBuilder sb = new StringBuilder("Predictive occupancy model (shared, not specific to a device): state ").append(info.state())
+				.append(". ").append(Text.oneLine(info.message(), 400)).append(' ').append(info.dataLabel())
+				.append(". Live ESP32 readings are never used to train it, and its accuracy on real homes has not been measured.");
+		return List.of(new FactDoc(ML_MODEL, "ml:synthetic", null, "Predictive occupancy model (synthetic data)", sb.toString(),
+				info.trainedAt() == null ? now : info.trainedAt()));
 	}
 
 	// ---- formatting ----------------------------------------------------------------------------

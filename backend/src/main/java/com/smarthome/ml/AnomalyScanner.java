@@ -48,12 +48,10 @@ public class AnomalyScanner {
 	private final DeviceService deviceService;
 	private final MlSampleRepository samples;
 	private final AnomalyService anomalies;
-	private final OccupancyService occupancy;
 	private final AnomalyModelService anomalyModels;
 	private final MlProperties props;
 	private final Clock clock;
 	private final Map<UUID, Instant> watermark = new ConcurrentHashMap<>();
-	private final Map<UUID, Instant> motionWatermark = new ConcurrentHashMap<>();
 	private final Map<UUID, Instant> forestWatermark = new ConcurrentHashMap<>();
 	private final Map<UUID, Instant> lastScan = new ConcurrentHashMap<>();
 	private final Map<UUID, Instant> lastManual = new ConcurrentHashMap<>();
@@ -61,13 +59,12 @@ public class AnomalyScanner {
 	private final Map<UUID, Object> deviceLocks = new ConcurrentHashMap<>();
 
 	public AnomalyScanner(DeviceRepository devices, DeviceService deviceService, MlSampleRepository samples, AnomalyService anomalies,
-			OccupancyService occupancy, AnomalyModelService anomalyModels, MlProperties props, Clock clock) {
+			AnomalyModelService anomalyModels, MlProperties props, Clock clock) {
 		this.anomalyModels = anomalyModels;
 		this.devices = devices;
 		this.deviceService = deviceService;
 		this.samples = samples;
 		this.anomalies = anomalies;
-		this.occupancy = occupancy;
 		this.props = props;
 		this.clock = clock;
 	}
@@ -157,7 +154,6 @@ public class AnomalyScanner {
 				}
 			}
 			watermark.put(deviceUuid, recent.get(0).at());
-			raised += unusualActivity(deviceUuid, now, firstLookback);
 			// The Isolation Forest runs after every rule and in its own error boundary: it can only add findings, and a
 			// broken or missing model can never stop, delay or replace a rule finding (gas included).
 			try {
@@ -184,40 +180,6 @@ public class AnomalyScanner {
 			}
 		}
 		return null;
-	}
-
-	/**
-	 * Motion reports since the last scan, checked against the learned household pattern. Only with a READY model:
-	 * without one, nothing is judged (there is no "normal" to compare with).
-	 */
-	private int unusualActivity(UUID deviceUuid, Instant now, Duration firstLookback) {
-		Instant since = motionWatermark.getOrDefault(deviceUuid, now.minus(firstLookback));
-		List<MotionSample> motion = samples.findMotionSamples(deviceUuid, since, PageRequest.of(0, props.anomaly().maxNewReadingsPerScan()));
-		if (motion.isEmpty()) {
-			return 0;
-		}
-		motionWatermark.put(deviceUuid, motion.get(0).at());
-		List<MotionSample> fresh = motion.stream().filter(s -> s.motion() && s.at().isAfter(since)).toList();
-		if (fresh.isEmpty()) {
-			return 0;
-		}
-		Optional<OccupancyModel> model = occupancy.readyModel(deviceUuid);
-		if (model.isEmpty()) {
-			return 0;
-		}
-		OccupancyModel om = model.get();
-		java.time.ZoneId zone = java.time.ZoneId.of(om.timeZone());
-		int raised = 0;
-		for (int i = fresh.size() - 1; i >= 0; i--) {                       // oldest first
-			MotionSample s = fresh.get(i);
-			java.time.ZonedDateTime local = s.at().atZone(zone);
-			Optional<Finding> f = AnomalyDetectors.unusualActivity(local, s.at(), om.probability(local), om.observedRate(local), om.support(local),
-					props.anomaly());
-			if (f.isPresent() && anomalies.raise(deviceUuid, f.get(), now).isPresent()) {
-				raised++;
-			}
-		}
-		return raised;
 	}
 
 	/**
@@ -276,7 +238,6 @@ public class AnomalyScanner {
 	/** Forgets cached state for a device (used when it is disowned, and by tests). */
 	public void forget(UUID deviceUuid) {
 		watermark.remove(deviceUuid);
-		motionWatermark.remove(deviceUuid);
 		forestWatermark.remove(deviceUuid);
 		anomalyModels.forget(deviceUuid);
 		lastScan.remove(deviceUuid);

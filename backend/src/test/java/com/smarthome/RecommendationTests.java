@@ -42,14 +42,6 @@ class RecommendationTests extends IntelTestBase {
 		return json(getAs(token, "/api/automations").andExpect(status().isOk())).size();
 	}
 
-	/** A device whose occupancy model is trained on 21 days of SIMULATED history (quiet from 23:00 to 07:00). */
-	private Paired trainedDevice(String token, String name) throws Exception {
-		Paired p = onlineNamed(token, name);
-		seedMotionHistory(p, Instant.now(), 21, 11);
-		occupancy.trainManually(p.userId(), p.uuid(), "UTC");
-		return p;
-	}
-
 	/** A device with a normal temperature history (about 22 C) and three unusual 45 C readings, found by the real scanner. */
 	private Paired deviceWithTemperatureOutliers(String token, String name) throws Exception {
 		Instant now = Instant.now();
@@ -81,101 +73,13 @@ class RecommendationTests extends IntelTestBase {
 
 		JsonNode r = list(t);
 		assertEquals(0, r.get("recommendations").size(), "nothing is invented");
-		assertTrue(r.get("notes").toString().contains("occupancy model is not trained"), r.get("notes").toString());
 		assertEquals(0, ruleCount(t));
 	}
 
-	// ---- quiet hours from the occupancy model --------------------------------------------------
 
-	@Test
-	void aTrainedModelWithAQuietNightSuggestsQuietHoursRulesWithEvidenceAndChangesNothing() throws Exception {
-		String t = newUserToken();
-		Paired p = trainedDevice(t, "Bedroom");
 
-		JsonNode r = list(t);
 
-		List<JsonNode> start = withTitle(r, "Turn the PIR LED off during quiet hours");
-		List<JsonNode> end = withTitle(r, "Return the PIR LED to auto");
-		assertEquals(1, start.size(), r.toString());
-		assertEquals(1, end.size());
-		JsonNode s = start.get(0);
-		assertEquals("CREATE_RULE", s.get("actionType").asString());
-		assertEquals("PENDING", s.get("status").asString());
-		assertEquals(p.uuid().toString(), s.get("deviceId").asString());
-		assertEquals("SCHEDULE", s.get("rule").get("trigger").get("type").asString());
-		assertEquals("set_pir_led", s.get("rule").get("action").get("action").asString());
-		assertEquals("off", s.get("rule").get("action").get("value").asString());
-		JsonNode ev = s.get("evidence");
-		assertTrue(ev.get("quietHours").asInt() >= 4 && ev.get("quietHours").asInt() <= 12, ev.toString());
-		assertTrue(ev.get("highestMotionChanceInWindow").asDouble() < 0.10);
-		assertEquals("UTC", ev.get("timeZone").asString());
-		assertTrue(ev.get("modelAccuracy").asDouble() > ev.get("modelBaselineAccuracy").asDouble() - 0.001, "the model must beat guessing to be trusted");
-		assertTrue(s.get("rationale").asString().contains("activity, not about people"));
-		assertTrue(s.get("description").asString().contains("set pir led to off"));
-		assertEquals(0, ruleCount(t), "a recommendation changes nothing by itself");
-		assertEquals(0, publisher.publishedTo(p.deviceId()).size());
-	}
 
-	@Test
-	void approvingCreatesTheRuleThroughTheNormalServiceAndIsNotOfferedAgain() throws Exception {
-		String t = newUserToken();
-		trainedDevice(t, "Approve me");
-		JsonNode start = withTitle(list(t), "Turn the PIR LED off during quiet hours").get(0);
-		String id = start.get("id").asString();
-
-		JsonNode applied = json(postAs(t, "/api/recommendations/" + id + "/approve", null).andExpect(status().isOk()));
-		assertEquals("APPLIED", applied.get("status").asString());
-		assertNotNull(applied.get("createdRuleId").asString(null));
-		assertEquals(1, ruleCount(t));
-		JsonNode rule = json(getAs(t, "/api/automations").andExpect(status().isOk())).get(0);
-		assertEquals("Quiet hours start", rule.get("name").asString());
-		assertEquals("off", rule.get("action").get("value").asString());
-		assertEquals(applied.get("createdRuleId").asString(), rule.get("id").asString());
-
-		postAs(t, "/api/recommendations/" + id + "/approve", null).andExpect(status().isConflict());
-		assertEquals(1, ruleCount(t), "no second rule");
-		assertEquals(0, withTitle(list(t), "Turn the PIR LED off during quiet hours").size(), "an identical rule now exists, so it is not offered again");
-		assertEquals(1, withTitle(list(t), "Return the PIR LED to auto").size(), "the other half is still on offer");
-	}
-
-	@Test
-	void aDismissedRecommendationStaysAwayAndCannotBeApprovedLater() throws Exception {
-		String t = newUserToken();
-		trainedDevice(t, "Dismiss me");
-		String id = withTitle(list(t), "Return the PIR LED to auto").get(0).get("id").asString();
-
-		assertEquals("DISMISSED", json(postAs(t, "/api/recommendations/" + id + "/dismiss", null).andExpect(status().isOk())).get("status").asString());
-		postAs(t, "/api/recommendations/" + id + "/approve", null).andExpect(status().isConflict());
-		postAs(t, "/api/recommendations/" + id + "/dismiss", null).andExpect(status().isConflict());
-		assertEquals(0, withTitle(json(postAs(t, "/api/recommendations/refresh", null).andExpect(status().isOk())), "Return the PIR LED to auto").size());
-		assertEquals(0, ruleCount(t));
-	}
-
-	@Test
-	void anAlreadyExistingMatchingRuleSuppressesTheSuggestion() throws Exception {
-		String t = newUserToken();
-		Paired p = trainedDevice(t, "Has rule");
-		JsonNode start = withTitle(list(t), "Turn the PIR LED off during quiet hours").get(0);
-		String time = start.get("rule").get("trigger").get("time").asString();
-		createRule(p, ruleJson("My own quiet rule", p.uuid(), null,
-				"{\"type\":\"SCHEDULE\",\"time\":\"" + time + "\",\"days\":[\"MON\"],\"timeZone\":\"UTC\"}", "AND", List.of(), "set_pir_led", "off", 10, 60));
-
-		assertEquals(0, withTitle(list(t), "Turn the PIR LED off during quiet hours").size());
-	}
-
-	@Test
-	void aSuggestionThatStopsBeingValidBecomesStaleInsteadOfStayingOnOffer() throws Exception {
-		String t = newUserToken();
-		Paired p = trainedDevice(t, "Goes stale");
-		String id = withTitle(list(t), "Turn the PIR LED off during quiet hours").get(0).get("id").asString();
-		jdbc.update("delete from ml_models where device_uuid = ?", p.uuid());          // the model disappears (for example it was removed)
-
-		JsonNode after = list(t);
-		assertEquals(0, after.get("recommendations").size());
-		assertEquals("STALE", recommendationRepo.findById(UUID.fromString(id)).orElseThrow().getStatus());
-		postAs(t, "/api/recommendations/" + id + "/approve", null).andExpect(status().isConflict());
-		assertEquals(0, ruleCount(t));
-	}
 
 	// ---- temperature indicator from readings and anomalies -------------------------------------
 
@@ -280,34 +184,5 @@ class RecommendationTests extends IntelTestBase {
 
 	// ---- ownership -----------------------------------------------------------------------------
 
-	@Test
-	void recommendationsBelongToTheirOwnerAlone() throws Exception {
-		String ta = newUserToken();
-		String tb = newUserToken();
-		trainedDevice(ta, "Alice room");
-		onlineNamed(tb, "Bob room");
 
-		JsonNode mine = list(ta);
-		String id = withTitle(mine, "Turn the PIR LED off during quiet hours").get(0).get("id").asString();
-		assertFalse(list(tb).toString().contains("Alice room"));
-		assertEquals(0, list(tb).get("recommendations").size());
-		postAs(tb, "/api/recommendations/" + id + "/approve", null).andExpect(status().isNotFound());
-		postAs(tb, "/api/recommendations/" + id + "/dismiss", null).andExpect(status().isNotFound());
-		postAs(ta, "/api/recommendations/" + UUID.randomUUID() + "/approve", null).andExpect(status().isNotFound());
-		assertEquals(0, ruleCount(tb));
-		assertEquals(0, ruleCount(ta));
-		assertEquals("PENDING", recommendationRepo.findById(UUID.fromString(id)).orElseThrow().getStatus());
-	}
-
-	@Test
-	void approvalReChecksOwnershipSoADisownedDeviceCannotGetARule() throws Exception {
-		String t = newUserToken();
-		Paired p = trainedDevice(t, "Soon gone");
-		String id = withTitle(list(t), "Turn the PIR LED off during quiet hours").get(0).get("id").asString();
-		deleteAs(t, "/api/devices/" + p.uuid()).andExpect(status().isNoContent());
-
-		postAs(t, "/api/recommendations/" + id + "/approve", null).andExpect(status().isNotFound());
-		assertEquals(0, ruleCount(t));
-		assertEquals("PENDING", recommendationRepo.findById(UUID.fromString(id)).orElseThrow().getStatus(), "the failed approval was rolled back");
-	}
 }

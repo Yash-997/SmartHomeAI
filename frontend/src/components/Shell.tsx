@@ -15,6 +15,7 @@ const ITEMS: Item[] = [
   { to: '/automation', label: 'Automation', icon: BoltIcon },
   { to: '/security', label: 'Security', icon: ShieldIcon },
   { to: '/insights', label: 'ML Insights', icon: SparkIcon },
+  { to: '/predictive', label: 'Predictive Demo', icon: SparkIcon },
   { to: '/assistant', label: 'Assistant', icon: ChatIcon },
   { to: '/reports', label: 'Reports', icon: ReportIcon },
   { to: '/diagnostics', label: 'System Diagnostics', icon: PulseIcon },

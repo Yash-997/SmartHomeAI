@@ -37,12 +37,8 @@ import com.smarthome.device.DeviceService;
 import com.smarthome.ml.AnomalyKind;
 import com.smarthome.ml.AnomalyService;
 import com.smarthome.ml.MlDtos.AnomalyResponse;
-import com.smarthome.ml.MlDtos.ForecastResponse;
-import com.smarthome.ml.MlDtos.OccupancyStatusResponse;
-import com.smarthome.ml.MlDtos.PredictionResponse;
 import com.smarthome.ml.MlExceptions.TooFrequentException;
 import com.smarthome.ml.MlSampleRepository;
-import com.smarthome.ml.OccupancyService;
 import com.smarthome.ml.SensorSample;
 import com.smarthome.recommendation.RecommendationDtos.RecommendationList;
 import com.smarthome.recommendation.RecommendationDtos.RecommendationResponse;
@@ -64,8 +60,6 @@ import tools.jackson.databind.node.DoubleNode;
 @Service
 public class RecommendationService {
 
-	static final double QUIET_PROBABILITY = 0.10;
-	static final int MIN_QUIET_HOURS = 4;
 	static final int MIN_TEMPERATURE_SAMPLES = 200;
 	static final int MIN_OUTLIERS = 3;
 	static final int MIN_RULE_RUNS = 5;
@@ -79,7 +73,6 @@ public class RecommendationService {
 
 	private final RecommendationRepository repo;
 	private final DeviceService devices;
-	private final OccupancyService occupancy;
 	private final AnomalyService anomalies;
 	private final AutomationService automation;
 	private final MlSampleRepository samples;
@@ -87,7 +80,7 @@ public class RecommendationService {
 	private final Clock clock;
 	private final Map<UUID, Instant> lastGenerated = new ConcurrentHashMap<>();
 
-	public RecommendationService(RecommendationRepository repo, DeviceService devices, OccupancyService occupancy, AnomalyService anomalies,
+	public RecommendationService(RecommendationRepository repo, DeviceService devices, AnomalyService anomalies,
 			AutomationService automation, MlSampleRepository samples, ObjectMapper mapper, Clock clock,
 			@org.springframework.beans.factory.annotation.Value("${app.recommendations.auto-refresh-seconds:300}") long autoRefreshSeconds,
 			@org.springframework.beans.factory.annotation.Value("${app.recommendations.min-manual-refresh-seconds:15}") long minManualRefreshSeconds) {
@@ -95,7 +88,6 @@ public class RecommendationService {
 		this.minManualRefresh = Duration.ofSeconds(minManualRefreshSeconds);
 		this.repo = repo;
 		this.devices = devices;
-		this.occupancy = occupancy;
 		this.anomalies = anomalies;
 		this.automation = automation;
 		this.samples = samples;
@@ -174,7 +166,6 @@ public class RecommendationService {
 		}
 		for (DeviceResponse d : mine) {
 			String name = Text.oneLine(d.name(), 60);
-			quietHours(owner, d, name, rules, found, notes);
 			temperatureAlert(owner, d, name, rules, found, notes, now);
 		}
 		ruleHealth(owner, rules, found, notes, now);
@@ -231,76 +222,6 @@ public class RecommendationService {
 		List<RecommendationResponse> list = repo.findByOwnerUserIdAndStatusOrderByCreatedAtDesc(owner, Recommendation.PENDING, PageRequest.of(0, 50)).stream()
 				.map(r -> toResponse(r, names)).toList();
 		return new RecommendationList(list, notes, lastGenerated.getOrDefault(owner, clock.instant()));
-	}
-
-	// ---- generator 1: quiet hours from the occupancy model -------------------------------------
-
-	private void quietHours(UUID owner, DeviceResponse d, String name, List<RuleResponse> rules, List<Candidate> out, List<String> notes) {
-		OccupancyStatusResponse st;
-		try {
-			st = occupancy.status(owner, d.id());
-		} catch (RuntimeException e) {
-			return;
-		}
-		if (!"READY".equals(st.state())) {
-			notes.add("\"" + name + "\": no quiet-hours suggestion because the occupancy model is " + st.state().toLowerCase().replace('_', ' ') + ".");
-			return;
-		}
-		ForecastResponse f = occupancy.forecast(owner, d.id(), null, 24, 60);
-		if (f.points().size() < 24) {
-			return;
-		}
-		boolean[] quiet = new boolean[24];
-		double[] prob = new double[24];
-		for (PredictionResponse p : f.points()) {
-			prob[p.hour()] = p.probability();
-			quiet[p.hour()] = p.reliable() && p.probability() < QUIET_PROBABILITY;
-		}
-		int bestStart = -1;
-		int bestLen = 0;
-		for (int s = 0; s < 24; s++) {
-			if (!quiet[s] || quiet[(s + 23) % 24]) {
-				continue;                                              // not the start of a run
-			}
-			int len = 0;
-			while (len < 24 && quiet[(s + len) % 24]) {
-				len++;
-			}
-			if (len > bestLen) {
-				bestLen = len;
-				bestStart = s;
-			}
-		}
-		if (bestStart < 0 || bestLen < MIN_QUIET_HOURS || bestLen >= 24) {
-			notes.add("\"" + name + "\": no quiet period of at least " + MIN_QUIET_HOURS + " hours was found in the occupancy forecast.");
-			return;
-		}
-		int endHour = (bestStart + bestLen) % 24;
-		double max = 0;
-		for (int i = 0; i < bestLen; i++) {
-			max = Math.max(max, prob[(bestStart + i) % 24]);
-		}
-		Map<String, Object> ev = new LinkedHashMap<>();
-		ev.put("quietFrom", hhmm(bestStart));
-		ev.put("quietUntil", hhmm(endHour));
-		ev.put("quietHours", bestLen);
-		ev.put("highestMotionChanceInWindow", Math.round(max * 1000) / 1000.0);
-		ev.put("threshold", QUIET_PROBABILITY);
-		ev.put("timeZone", f.timeZone());
-		ev.put("modelAccuracy", st.metrics() == null ? null : Math.round(st.metrics().accuracy() * 1000) / 1000.0);
-		ev.put("modelBaselineAccuracy", st.metrics() == null ? null : Math.round(st.metrics().baselineAccuracy() * 1000) / 1000.0);
-
-		String why = "The occupancy model for \"" + name + "\" (state READY) expects no motion between " + hhmm(bestStart) + " and " + hhmm(endHour)
-				+ " (" + f.timeZone() + "): the highest chance of motion in those " + bestLen + " hours is " + Math.round(max * 100) + "%. "
-				+ "\"Occupied\" means the PIR sensor fired, so this is a guess about activity, not about people.";
-		if (!hasScheduleRule(rules, d.id(), hhmm(bestStart), "off")) {
-			out.add(new Candidate(d.id(), Recommendation.CREATE_RULE, "quiet-start:" + d.id() + ":" + hhmm(bestStart), "Turn the PIR LED off during quiet hours (from " + hhmm(bestStart) + ")",
-					why, ev, scheduleRule("Quiet hours start", d.id(), hhmm(bestStart), f.timeZone(), "off")));
-		}
-		if (!hasScheduleRule(rules, d.id(), hhmm(endHour), "auto")) {
-			out.add(new Candidate(d.id(), Recommendation.CREATE_RULE, "quiet-end:" + d.id() + ":" + hhmm(endHour), "Return the PIR LED to auto after quiet hours (at " + hhmm(endHour) + ")",
-					why, ev, scheduleRule("Quiet hours end", d.id(), hhmm(endHour), f.timeZone(), "auto")));
-		}
 	}
 
 	// ---- generator 2: temperature indicator from readings and anomalies ------------------------

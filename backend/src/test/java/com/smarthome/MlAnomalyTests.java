@@ -400,7 +400,6 @@ class MlAnomalyTests extends MlTestBase {
 		seedMotionHistory(p, now, 5, 1);
 		add(p, now.minusSeconds(30), 45.0, 50.0, 4095);   // temperature spike and a saturated gas reading
 		scanner.scan(p.uuid(), now, LOOKBACK);
-		mvc.perform(post("/api/devices/" + p.uuid() + "/ml/occupancy/train").header("Authorization", p.auth())).andExpect(status().isOk());
 
 		assertFalse(all(p).isEmpty());
 		assertEquals(0, published(p), "nothing was published to the device");

@@ -2,6 +2,7 @@ package com.smarthome.alert;
 
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.mail.MailAuthenticationException;
 import org.springframework.mail.MailException;
 import org.springframework.mail.MailSendException;
@@ -18,6 +19,7 @@ import jakarta.mail.internet.MimeMessage;
  * Google App Password in MAIL_PASSWORD; neither is ever logged, stored or returned.
  */
 @Component
+@ConditionalOnProperty(name = "app.mail.provider", havingValue = "smtp", matchIfMissing = true)
 public class SmtpAlertMailer implements AlertMailer {
 
 	private final ObjectProvider<JavaMailSender> sender;

@@ -1,7 +1,9 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { api, type MlStatus, type Prediction } from '../api'
-import { STATE, fmtCount, pct, progress } from '../insights'
-import { AlertIcon, CheckIcon, MotionIcon, PulseIcon, SparkIcon } from '../ui/icons'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
+import type { MlStatus } from '../api'
+import { STATE, fmtCount, fmtDateTime, pct } from '../insights'
+import { predictiveApi, type PredictionNow } from '../predictive'
+import { AlertIcon, CheckIcon, MotionIcon, SparkIcon } from '../ui/icons'
 
 function Tile({ icon, label, children, footer, tone = 'default' }: { icon: ReactNode; label: string; children: ReactNode; footer?: ReactNode; tone?: 'default' | 'warn' | 'alarm' }) {
   return (
@@ -16,50 +18,53 @@ function Tile({ icon, label, children, footer, tone = 'default' }: { icon: React
   )
 }
 
-/** The current chance-of-motion read-out. Only fetched when the server says a valid model exists. */
-function NowPrediction({ deviceId, modelKey, zone }: { deviceId: string; modelKey: string; zone: string | null }) {
-  const [res, setRes] = useState<{ key: string; p?: Prediction } | null>(null)
+const STATE_TEXT = { LIKELY_OCCUPIED: 'Likely home', LIKELY_EMPTY: 'Likely away', UNCERTAIN: 'Uncertain' } as const
+
+/** The prediction for this time of day on a synthetic "today". Only fetched when the model is ready. */
+function NowPrediction({ modelVersion }: { modelVersion: number }) {
+  const [res, setRes] = useState<{ version: number; now?: PredictionNow } | null>(null)
   useEffect(() => {
     let cancelled = false
-    Promise.resolve()
-      .then(() => api.predictNow(deviceId))
-      .then((p) => !cancelled && setRes({ key: modelKey, p }))
-      .catch(() => !cancelled && setRes({ key: modelKey }))
+    predictiveApi
+      .now()
+      .then((now) => !cancelled && setRes({ version: modelVersion, now }))
+      .catch(() => !cancelled && setRes({ version: modelVersion }))
     return () => {
       cancelled = true
     }
-  }, [deviceId, modelKey])
-  const shown = res && res.key === modelKey ? res : null
+  }, [modelVersion])
+  const shown = res && res.version === modelVersion ? res : null
   if (!shown) return <p className="text-sm text-slate-400">Loading...</p>
-  if (!shown.p) return <p className="text-sm text-amber-300">The prediction could not be loaded.</p>
-  const p = shown.p
+  if (!shown.now) return <p className="text-sm text-amber-300">The prediction could not be loaded.</p>
+  const { presence, at } = shown.now
   return (
     <>
-      <p className="text-2xl font-semibold tracking-tight">{p.predictedOccupied ? 'Motion likely' : 'Quiet likely'}</p>
-      <p className="mt-1 text-sm text-slate-300">{pct(p.probability)} chance of motion this hour{zone ? ` (${zone})` : ''}</p>
-      <p className="mt-1 text-xs text-slate-500">Based on {p.support} similar past slots{p.reliable ? '' : ' (little evidence, treat with caution)'}.</p>
+      <p className="text-2xl font-semibold tracking-tight">{STATE_TEXT[presence.state]}</p>
+      <p className="mt-1 text-sm text-slate-300">{pct(presence.probability)} probability of being home · confidence {pct(presence.confidence)}</p>
+      <p className="mt-1 text-xs text-slate-500">Synthetic home at {at.slice(11, 16)}. Not your real home.</p>
     </>
   )
 }
 
-/** The short version of ML Insights: model health, data progress, anomalies and (only with a valid model) the prediction. */
-export default function InsightsOverview({ deviceId, status, onOpenAnomalies }: { deviceId: string; status: MlStatus; onOpenAnomalies: () => void }) {
+/** The short version of ML Insights: the model, its current prediction, and anomalies. */
+export default function InsightsOverview({ status, onOpenAnomalies }: { status: MlStatus; onOpenAnomalies: () => void }) {
   const o = status.occupancy
   const state = STATE[o.state]
-  const steps = progress(o)
-  const worst = steps ? steps.reduce((a, b) => (a.have / a.need <= b.have / b.need ? a : b)) : null
-  const ready = steps ? steps.every((s) => s.have >= s.need) : false
   const a = status.anomalies
-  const modelKey = o.predictionsAvailable ? `${deviceId}:${o.trainedAt}` : ''
+  const ready = o.state === 'READY'
+  const rows: [string, string][] = ready
+    ? [
+        ['Training samples', `${fmtCount(o.trainingRows)} from ${o.trainingDays} days`],
+        ['Dataset readings', fmtCount(o.dataset?.records)],
+        ['Last trained', fmtDateTime(o.trainedAt)],
+        ['Model version', `v${o.version}`],
+        ['Data source', 'Synthetic demonstration data'],
+      ]
+    : []
 
   return (
     <div className="space-y-4">
-      {o.state === 'LOW_QUALITY' && (
-        <p role="alert" className="flex items-start gap-3 rounded-2xl border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-200">
-          <AlertIcon className="mt-0.5 shrink-0" width={18} height={18} />
-          <span><strong>The occupancy model is low quality.</strong> It was not clearly better than guessing the average, so treat its predictions as unreliable.</span>
-        </p>
-      )}
+      {o.dataLabel && <p role="status" className="card border-2 px-4 py-3 text-sm font-semibold">{o.dataLabel}</p>}
       {a.critical > 0 && (
         <p role="alert" className="flex items-start gap-3 rounded-2xl border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-200">
           <AlertIcon className="mt-0.5 shrink-0" width={18} height={18} />
@@ -70,34 +75,23 @@ export default function InsightsOverview({ deviceId, status, onOpenAnomalies }: 
         </p>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Tile icon={<SparkIcon />} label="Occupancy model" tone={o.state === 'LOW_QUALITY' ? 'alarm' : o.state === 'READY' ? 'default' : 'warn'}
-          footer={o.modelVersion > 0 ? `Version ${o.modelVersion}` : state.hint}>
+      <div className="grid gap-4 md:grid-cols-3">
+        <Tile icon={<SparkIcon />} label="Occupancy model" tone={o.state === 'UNAVAILABLE' ? 'alarm' : ready ? 'default' : 'warn'}
+          footer={<Link to="/predictive" className="underline">Open predictive demonstration</Link>}>
           <span className={`inline-block rounded-full px-3 py-1 text-sm font-medium ${state.tone}`}>{state.label}</span>
-          <p className="mt-2 text-sm text-slate-300">{o.message}</p>
-        </Tile>
-
-        <Tile icon={<PulseIcon />} label="Data collection"
-          footer={worst ? `Needs ${o.requirements.minUsableSlots} usable ${o.requirements.slotMinutes}-minute slots over ${o.requirements.minDistinctDays}+ days` : undefined}>
-          {worst ? (
-            <>
-              <p className="text-2xl font-semibold tracking-tight">{ready ? 'Enough data' : `${fmtCount(worst.have)} / ${fmtCount(worst.need)}`}</p>
-              <p className="mt-1 text-sm text-slate-300">{ready ? 'All training requirements are met.' : worst.label}</p>
-              <div className="mt-3 h-1.5 rounded bg-slate-700" role="progressbar" aria-label="Data collection progress" aria-valuemin={0} aria-valuemax={worst.need} aria-valuenow={Math.min(worst.have, worst.need)}>
-                <div className={`h-1.5 rounded ${ready ? 'bg-green-500' : 'bg-indigo-400'}`} style={{ width: `${Math.min(100, (worst.have / worst.need) * 100)}%` }} />
-              </div>
-            </>
+          {ready ? (
+            <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+              {rows.map(([k, v]) => (
+                <Fragment key={k}><dt className="text-slate-400">{k}</dt><dd className="text-right text-slate-300">{v}</dd></Fragment>
+              ))}
+            </dl>
           ) : (
-            <p className="text-sm text-slate-300">{o.data.motionReadings === 0 ? 'No motion readings stored yet.' : `${fmtCount(o.data.motionReadings)} motion readings stored.`}</p>
+            <p className="mt-2 text-sm text-slate-300">{o.message}</p>
           )}
         </Tile>
 
-        <Tile icon={<MotionIcon />} label="Occupancy now" footer={o.predictionsAvailable ? undefined : 'Predictions appear once a valid model exists.'}>
-          {o.predictionsAvailable ? (
-            <NowPrediction deviceId={deviceId} modelKey={modelKey} zone={o.timeZone} />
-          ) : (
-            <p className="text-sm text-slate-300">No prediction yet. Nothing is guessed before a model is trained.</p>
-          )}
+        <Tile icon={<MotionIcon />} label="Occupancy now" footer={ready ? undefined : 'A prediction appears once the model is ready.'}>
+          {ready ? <NowPrediction modelVersion={o.version} /> : <p className="text-sm text-slate-300">No prediction yet.</p>}
         </Tile>
 
         <Tile icon={a.active > 0 ? <AlertIcon /> : <CheckIcon />} label="Anomalies" tone={a.critical > 0 ? 'alarm' : a.active > 0 ? 'warn' : 'default'}

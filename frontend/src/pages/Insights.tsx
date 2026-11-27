@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, ApiError, type Device, type MlStatus } from '../api'
 import AnomalyPanel from '../components/AnomalyPanel'
-import DataCollectionPanel from '../components/DataCollectionPanel'
-import OccupancyPanel from '../components/OccupancyPanel'
+import ConnectivityPanel from '../components/ConnectivityPanel'
+import ModelPanel from '../components/ModelPanel'
 import PanelBoundary from '../components/PanelBoundary'
 import RecommendationsPanel from '../components/RecommendationsPanel'
 import InsightsOverview from '../components/InsightsOverview'
@@ -51,6 +51,12 @@ export default function Insights() {
   }, [refresh])
 
   const status = current?.status
+  const preparing = status?.occupancy.state === 'PREPARING'
+  useEffect(() => {
+    if (!preparing) return
+    const timer = setInterval(refresh, 4000)
+    return () => clearInterval(timer)
+  }, [preparing, refresh])
   const selector =
     devices.kind === 'ready' && devices.devices.length > 1 ? (
       <label className="flex items-center gap-2 text-sm text-slate-300">
@@ -63,13 +69,13 @@ export default function Insights() {
 
   return (
     <Shell wide>
-      <PageHeader title="ML Insights" subtitle="What your home has learned from its own stored readings." actions={selector} />
+      <PageHeader title="ML Insights" subtitle="Predictive occupancy from synthetic demonstration data, and anomalies for your devices." actions={selector} />
 
       {devices.kind === 'loading' && <p role="status" className="text-slate-400">Loading...</p>}
       {devices.kind === 'error' && <p role="alert" className="rounded-xl border border-red-400/40 bg-red-500/10 p-4 text-sm text-red-300">{devices.message}</p>}
       {devices.kind === 'ready' && devices.devices.length === 0 && (
         <p className="card p-8 text-center text-sm text-slate-400">
-          You have no devices yet. Pair one on the Devices page; insights appear once it has sent readings.
+          You have no devices yet. Pair one on the Devices page, or open the Predictive Demo, which needs no device.
         </p>
       )}
 
@@ -86,7 +92,7 @@ export default function Insights() {
             <>
               <section aria-labelledby="overview-heading" className="space-y-4">
                 <h2 id="overview-heading" className="text-lg font-semibold">Overview</h2>
-                <InsightsOverview deviceId={deviceId} status={status} onOpenAnomalies={() => setAnomaliesOpen(true)} />
+                <InsightsOverview status={status} onOpenAnomalies={() => setAnomaliesOpen(true)} />
                 <PanelBoundary title="Suggestions">
                   <RecommendationsPanel />
                 </PanelBoundary>
@@ -96,16 +102,16 @@ export default function Insights() {
               <section aria-labelledby="advanced-heading" className="space-y-3">
                 <div>
                   <h2 id="advanced-heading" className="text-lg font-semibold">Advanced details</h2>
-                  <p className="text-sm text-slate-400">Datasets, metrics and history behind the overview. Open a section to dig in.</p>
+                  <p className="text-sm text-slate-400">Model, connectivity and anomaly history. Open a section to dig in.</p>
                 </div>
-                <Disclosure title="Historical data and connectivity" hint="How much has been stored, and when the device was reachable.">
-                  <PanelBoundary title="Historical data">
-                    <DataCollectionPanel key={`d-${deviceId}`} deviceId={deviceId} status={status.occupancy} />
+                <Disclosure title="Predictive model: dataset, training and evaluation" hint="The synthetic dataset, chosen algorithms and measured results.">
+                  <PanelBoundary title="Predictive model">
+                    <ModelPanel status={status.occupancy} onChanged={refresh} />
                   </PanelBoundary>
                 </Disclosure>
-                <Disclosure title="Occupancy model: readiness, metrics and training" hint="Requirements, accuracy against a simple baseline, the weekly pattern and past training runs.">
-                  <PanelBoundary title="Occupancy prediction">
-                    <OccupancyPanel key={deviceId} deviceId={deviceId} status={status.occupancy} onChanged={refresh} />
+                <Disclosure title="Device connectivity" hint="When this physical device was reachable.">
+                  <PanelBoundary title="Connectivity">
+                    <ConnectivityPanel key={`d-${deviceId}`} deviceId={deviceId} />
                   </PanelBoundary>
                 </Disclosure>
                 <Disclosure title="Anomaly history" hint="Everything the detectors have flagged, with options to acknowledge or dismiss."
@@ -115,9 +121,9 @@ export default function Insights() {
                     <AnomalyPanel key={`a-${deviceId}`} deviceId={deviceId} activeCount={status.anomalies.active} onChanged={refresh} />
                   </PanelBoundary>
                 </Disclosure>
-                <Disclosure title="Synthetic demonstration model" hint="Generated data used only to demonstrate the pipeline. Never your home's real data."
+                <Disclosure title="Anomaly detector benchmark" hint="A separate generated dataset for testing anomaly detectors. It does not feed the predictive occupancy model."
                   badge={<span className="rounded bg-indigo-900 px-1.5 py-0.5 text-[11px] font-semibold tracking-wide text-indigo-600 ring-1 ring-inset ring-line">SYNTHETIC</span>}>
-                  <PanelBoundary title="Synthetic demonstration">
+                  <PanelBoundary title="Anomaly detector benchmark">
                     <SyntheticPanel key={`s-${deviceId}`} deviceId={deviceId} />
                   </PanelBoundary>
                 </Disclosure>

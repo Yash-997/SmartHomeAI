@@ -17,7 +17,6 @@ import com.smarthome.ml.MlAnomalyRepository;
 import com.smarthome.ml.MlDispatcher;
 import com.smarthome.ml.MlModelRepository;
 import com.smarthome.ml.MotionSample;
-import com.smarthome.ml.OccupancyService;
 import com.smarthome.ml.SyntheticOccupancy;
 import com.smarthome.telemetry.TelemetryReading;
 
@@ -34,7 +33,6 @@ abstract class MlTestBase extends AutomationTestBase {
 	@Autowired AnomalyScanner scanner;
 	@Autowired AnomalyService anomalyService;
 	@Autowired MlDispatcher mlDispatcher;
-	@Autowired OccupancyService occupancy;
 	@Autowired PlatformTransactionManager transactions;
 
 	TelemetryReading reading(Paired p, Instant at, Double temp, Double hum, Boolean motion, Integer gas) {

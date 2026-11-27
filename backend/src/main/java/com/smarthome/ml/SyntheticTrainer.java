@@ -95,7 +95,7 @@ public final class SyntheticTrainer {
 		}
 		OccupancyTrainer.Counts counts = new OccupancyTrainer.Counts(built.samples(), built.buckets().size(), built.positives(),
 				built.sparseBucketsDropped(), built.distinctDays(), built.first(), built.last());
-		if (train.size() < cfg.minLabeledBuckets() || val.isEmpty() || test.isEmpty() || classes(train) < 2) {
+		if (val.isEmpty() || test.isEmpty() || classes(train) < 2) {
 			return new Result(OccupancyTrainer.Status.INSUFFICIENT_DATA, "The synthetic dataset is too small for a train/validation/test split.",
 					null, 0, Map.of(), split(train, width), split(val, width), split(test, width), dropped, excluded, null, null, counts);
 		}

@@ -38,7 +38,7 @@ import com.smarthome.health.SystemStatusDtos.SensorFreshness;
 import com.smarthome.health.SystemStatusDtos.SensorState;
 import com.smarthome.health.SystemStatusDtos.SystemStatus;
 import com.smarthome.ml.AnomalyService;
-import com.smarthome.ml.OccupancyService;
+import com.smarthome.predict.PredictiveModelService;
 import com.smarthome.mqtt.CommandPublisher;
 
 /**
@@ -56,7 +56,7 @@ public class SystemStatusService {
 	private final CommandPublisher publisher;
 	private final DeviceService devices;
 	private final HealthQueries queries;
-	private final OccupancyService occupancy;
+	private final PredictiveModelService occupancy;
 	private final AnomalyService anomalies;
 	private final LlmClient llm;
 	private final EmbeddingClient embedder;
@@ -65,7 +65,7 @@ public class SystemStatusService {
 	private final Duration sensorStale;
 
 	public SystemStatusService(JdbcTemplate jdbc, CommandPublisher publisher, DeviceService devices, HealthQueries queries,
-			OccupancyService occupancy, AnomalyService anomalies, LlmClient llm, EmbeddingClient embedder, RagChunkStore ragStore, Clock clock,
+			PredictiveModelService occupancy, AnomalyService anomalies, LlmClient llm, EmbeddingClient embedder, RagChunkStore ragStore, Clock clock,
 			@Value("${app.health.sensor-stale-seconds:300}") long sensorStaleSeconds) {
 		this.jdbc = jdbc;
 		this.publisher = publisher;
@@ -179,12 +179,12 @@ public class SystemStatusService {
 
 	private MlReadiness mlReadiness(UUID owner, DeviceResponse d, String name, List<Issue> issues) {
 		try {
-			var o = occupancy.status(owner, d.id());
+			var o = occupancy.info();
 			int active = anomalies.list(owner, d.id(), true, 50).size();
 			if (active > 0) {
 				issues.add(new Issue(Level.DEGRADED, "ml", active + " active anomal" + (active == 1 ? "y" : "ies") + " on \"" + name + "\"."));
 			}
-			return new MlReadiness(d.id(), name, o.state(), o.predictionsAvailable(), active);
+			return new MlReadiness(d.id(), name, o.state(), "READY".equals(o.state()), active);
 		} catch (RuntimeException e) {
 			log.warn("Status check: ML readiness failed ({})", e.getClass().getSimpleName());
 			issues.add(new Issue(Level.DEGRADED, "ml", "ML status of \"" + name + "\" could not be read."));

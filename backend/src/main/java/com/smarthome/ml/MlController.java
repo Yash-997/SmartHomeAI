@@ -19,14 +19,12 @@ import org.springframework.web.bind.annotation.RestController;
 import com.smarthome.ml.MlDtos.AnomalyModelStatusResponse;
 import com.smarthome.ml.MlDtos.AnomalyResponse;
 import com.smarthome.ml.MlDtos.ConnectivityResponse;
-import com.smarthome.ml.MlDtos.PatternResponse;
-import com.smarthome.ml.MlDtos.TrainingRunResponse;
-import com.smarthome.ml.MlDtos.ForecastResponse;
 import com.smarthome.ml.MlDtos.MlStatusResponse;
-import com.smarthome.ml.MlDtos.OccupancyStatusResponse;
-import com.smarthome.ml.MlDtos.PredictionResponse;
 import com.smarthome.ml.MlDtos.ResolveRequest;
 import com.smarthome.ml.MlDtos.ScanResponse;
+
+import com.smarthome.device.DeviceService;
+import com.smarthome.predict.PredictiveModelService;
 
 import jakarta.validation.Valid;
 
@@ -38,16 +36,18 @@ public class MlController {
 	static final String NOTICE = "ML insights are advisory. They are computed from stored readings and never change a device or "
 			+ "an automation. The device's own gas warning works independently of all of this.";
 
-	private final OccupancyService occupancy;
+	private final PredictiveModelService predictive;
+	private final DeviceService devices;
 	private final AnomalyService anomalies;
 	private final AnomalyScanner scanner;
 	private final DataCollectionService collection;
 	private final AnomalyModelService anomalyModels;
 
-	public MlController(OccupancyService occupancy, AnomalyService anomalies, AnomalyScanner scanner, DataCollectionService collection,
+	public MlController(PredictiveModelService predictive, DeviceService devices, AnomalyService anomalies, AnomalyScanner scanner, DataCollectionService collection,
 			AnomalyModelService anomalyModels) {
 		this.anomalyModels = anomalyModels;
-		this.occupancy = occupancy;
+		this.predictive = predictive;
+		this.devices = devices;
 		this.anomalies = anomalies;
 		this.scanner = scanner;
 		this.collection = collection;
@@ -59,51 +59,16 @@ public class MlController {
 
 	@GetMapping("/status")
 	public MlStatusResponse status(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId) {
-		OccupancyStatusResponse o = occupancy.status(userId(jwt), deviceId);   // also checks ownership
-		return new MlStatusResponse(o, anomalies.summary(deviceId, scanner.lastScanAt(deviceId)), NOTICE);
+		devices.requireOwned(userId(jwt), deviceId);
+		return new MlStatusResponse(predictive.info(), anomalies.summary(deviceId, scanner.lastScanAt(deviceId)), NOTICE);
 	}
 
-	/** Trains now, on stored history (this is the only way a person starts training). Optional IANA time zone for "time of day". */
-	@PostMapping("/occupancy/train")
-	public OccupancyStatusResponse train(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId,
-			@RequestParam(required = false) String timeZone) {
-		return occupancy.trainManually(userId(jwt), deviceId, timeZone);
-	}
-
-	/** Training history, newest first: every manual and automatic run, with its version, data and evaluation. */
-	@GetMapping("/occupancy/runs")
-	public List<TrainingRunResponse> runs(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId,
-			@RequestParam(defaultValue = "20") int limit) {
-		return occupancy.runs(userId(jwt), deviceId, limit);
-	}
-
-	/** The learned weekly pattern (168 hours). 409 until a model exists. */
-	@GetMapping("/occupancy/pattern")
-	public PatternResponse pattern(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId) {
-		return occupancy.pattern(userId(jwt), deviceId);
-	}
-
-	/** Connectivity history (online/offline changes), newest first. */
 	@GetMapping("/connectivity")
 	public ConnectivityResponse connectivity(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId,
 			@RequestParam(defaultValue = "20") int limit) {
 		return collection.connectivity(userId(jwt), deviceId, limit);
 	}
 
-	@GetMapping("/occupancy/predict")
-	public PredictionResponse predict(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId,
-			@RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant at) {
-		return occupancy.predict(userId(jwt), deviceId, at);
-	}
-
-	@GetMapping("/occupancy/forecast")
-	public ForecastResponse forecast(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId,
-			@RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
-			@RequestParam(defaultValue = "24") int hours, @RequestParam(defaultValue = "60") int stepMinutes) {
-		return occupancy.forecast(userId(jwt), deviceId, from, hours, stepMinutes);
-	}
-
-	/** status=active (default) or all. */
 	@GetMapping("/anomalies")
 	public List<AnomalyResponse> anomalies(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID deviceId,
 			@RequestParam(defaultValue = "active") String status, @RequestParam(defaultValue = "50") int limit) {

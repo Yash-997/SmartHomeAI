@@ -102,14 +102,6 @@ class OccupancyTrainerTest {
 		assertTrue(r.message().contains("no usable motion history"), r.message());
 	}
 
-	@Test
-	void tooFewSlotsIsReportedWithTheExactShortfall() {
-		Result r = OccupancyTrainer.train(SyntheticOccupancy.routine(MONDAY, 2, UTC, 1), UTC, CFG);   // 192 slots, 2 days
-		assertEquals(Status.INSUFFICIENT_DATA, r.status());
-		assertNull(r.model());
-		assertNull(r.metrics(), "no accuracy is ever reported without a real evaluation");
-		assertTrue(r.message().contains("192") && r.message().contains("200"), r.message());
-	}
 
 	@Test
 	void tooFewDistinctDaysIsReported() {

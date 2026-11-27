@@ -15,17 +15,15 @@ public class MlScheduler {
 
 	private final MlDispatcher dispatcher;
 	private final AnomalyScanner scanner;
-	private final OccupancyService occupancy;
 	private final AnomalyModelService anomalyModels;
 	private final MlProperties props;
 	private final Clock clock;
 
-	public MlScheduler(MlDispatcher dispatcher, AnomalyScanner scanner, OccupancyService occupancy, AnomalyModelService anomalyModels,
+	public MlScheduler(MlDispatcher dispatcher, AnomalyScanner scanner, AnomalyModelService anomalyModels,
 			MlProperties props, Clock clock) {
 		this.anomalyModels = anomalyModels;
 		this.dispatcher = dispatcher;
 		this.scanner = scanner;
-		this.occupancy = occupancy;
 		this.props = props;
 		this.clock = clock;
 	}
@@ -40,7 +38,6 @@ public class MlScheduler {
 	@Scheduled(fixedDelayString = "${app.ml.training.auto-check-ms:3600000}", initialDelayString = "${app.ml.training.auto-check-ms:3600000}")
 	public void train() {
 		if (props.training().autoEnabled()) {
-			dispatcher.submit(() -> occupancy.autoTrainAll(clock.instant()));
 			dispatcher.submit(() -> anomalyModels.autoTrainAll(clock.instant()));
 		}
 	}

@@ -10,6 +10,7 @@ import Devices from './pages/Devices'
 import Diagnostics from './pages/Diagnostics'
 import Insights from './pages/Insights'
 import Login from './pages/Login'
+import Predictive from './pages/Predictive'
 import Register from './pages/Register'
 import Reports from './pages/Reports'
 import Security from './pages/Security'
@@ -54,6 +55,7 @@ function AnimatedRoutes() {
           <Route path="/security" element={<RequireAuth><Security /></RequireAuth>} />
           <Route path="/diagnostics" element={<RequireAuth><Diagnostics /></RequireAuth>} />
           <Route path="/insights" element={<RequireAuth><Insights /></RequireAuth>} />
+          <Route path="/predictive" element={<RequireAuth><Predictive /></RequireAuth>} />
           <Route path="/assistant" element={<RequireAuth><Assistant /></RequireAuth>} />
           <Route path="/reports" element={<RequireAuth><Reports /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -25,6 +25,7 @@ import com.smarthome.device.DeviceService;
 import com.smarthome.device.DeviceStatus;
 import com.smarthome.ml.MlDtos.AnomalyModelInfo;
 import com.smarthome.ml.MlDtos.AnomalyModelStatusResponse;
+import com.smarthome.ml.MlExceptions.InvalidMlRequestException;
 import com.smarthome.ml.MlExceptions.TooFrequentException;
 import com.smarthome.ml.MlTrainingRun.DataSource;
 import com.smarthome.ml.MlTrainingRun.Trigger;
@@ -102,10 +103,17 @@ public class AnomalyModelService {
 		lastManual.remove(deviceUuid);
 	}
 
+	@org.springframework.beans.factory.annotation.Value("${app.ml.forest.real-training-enabled:false}")
+	private boolean realTrainingEnabled;
+
 	// ---- training on real telemetry ---------------------------------------------------------------
 
 	public AnomalyModelStatusResponse trainManually(UUID ownerId, UUID deviceUuid) {
 		Device d = deviceService.requireOwned(ownerId, deviceUuid);
+		if (!realTrainingEnabled) {
+			throw new InvalidMlRequestException("model",
+					"Training on live device readings is switched off: this installation trains only on synthetic data.");
+		}
 		Instant now = clock.instant();
 		Instant last = lastManual.get(d.getId());
 		if (last != null && Duration.between(last, now).getSeconds() < props.training().minManualIntervalSeconds()) {
@@ -118,7 +126,7 @@ public class AnomalyModelService {
 
 	/** Hourly job: retrains each active device about once a day; after "not enough data" only every few hours. */
 	public void autoTrainAll(Instant now) {
-		if (!props.training().autoEnabled()) {
+		if (!realTrainingEnabled || !props.training().autoEnabled()) {
 			return;
 		}
 		for (Device d : devices.findByStatus(DeviceStatus.ACTIVE)) {

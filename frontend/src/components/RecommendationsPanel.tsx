@@ -82,7 +82,7 @@ export default function RecommendationsPanel() {
         <h3 id="rec-heading" className="font-semibold">Recommendations</h3>
         <button type="button" onClick={refresh} disabled={busy} className="rounded-md bg-slate-700 px-3 py-1 text-xs hover:bg-slate-600 disabled:opacity-60">{busy ? 'Looking...' : 'Look again'}</button>
       </div>
-      <p className="mt-1 text-xs text-slate-500">Built from your own readings, occupancy model, anomalies and rule history. Each shows its numbers; none is applied without your approval.</p>
+      <p className="mt-1 text-xs text-slate-500">Built from your own devices, anomalies and rule history. Each shows its numbers; none is applied without your approval.</p>
 
       {!data && !error && <PanelSkeleton lines={3} />}
       {error && !data && <p className="mt-3 rounded bg-red-500/10 p-2 text-sm text-red-400" role="alert">{error} <button onClick={reload} className="underline">Try again</button></p>}

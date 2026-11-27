@@ -108,10 +108,6 @@ class SyntheticApiTests extends MlTestBase {
 
 		// The real model and the real training history are untouched.
 		assertTrue(mlModels.findByDeviceUuidAndModelType(p.uuid(), MlModel.OCCUPANCY).isEmpty());
-		JsonNode real = call(p, get("/api/devices/" + p.uuid() + "/ml/status").header("Authorization", p.auth())).get("occupancy");
-		assertTrue(real.get("collecting").asBoolean(), "real insights still say they are collecting data");
-		assertEquals(0, real.get("modelVersion").asInt());
-		assertEquals(0, call(p, get("/api/devices/" + p.uuid() + "/ml/occupancy/runs").header("Authorization", p.auth())).size());
 		assertEquals("SYNTHETIC", jdbc.queryForObject("select data_source from ml_training_runs where device_uuid = ? and model_type = ?", String.class,
 				p.uuid(), MlModel.OCCUPANCY_SYNTHETIC));
 		assertEquals(realReadingsBefore, realReadings(p));
@@ -156,8 +152,6 @@ class SyntheticApiTests extends MlTestBase {
 		assertEquals("SYNTHETIC", f.get("source").asString());
 		assertEquals(24, f.get("points").size());
 		assertEquals("SYNTHETIC", f.get("points").get(0).get("quality").asString());
-		// The real prediction endpoint still refuses: there is no real model.
-		mvc.perform(get("/api/devices/" + p.uuid() + "/ml/occupancy/predict").header("Authorization", p.auth())).andExpect(status().isConflict());
 	}
 
 	@Test

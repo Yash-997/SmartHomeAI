@@ -52,10 +52,6 @@ public final class OccupancyTrainer {
 		if (n == 0) {
 			why = "There is no usable motion history yet (" + data.samples() + " motion readings, none forming a "
 					+ cfg.bucketMinutes() + "-minute slot with at least " + cfg.minReadingsPerBucket() + " readings).";
-		} else if (n < cfg.minLabeledBuckets()) {
-			why = "Only " + n + " usable " + cfg.bucketMinutes() + "-minute slots so far; at least " + cfg.minLabeledBuckets()
-					+ " are needed (about " + (int) Math.ceil(cfg.minLabeledBuckets() / (double) slotsPerDay)
-					+ " days of continuous data). " + data.sparseBucketsDropped() + " slots were ignored for having too few readings.";
 		} else if (data.distinctDays() < cfg.minDistinctDays()) {
 			why = "The history covers only " + data.distinctDays() + " calendar day(s); at least " + cfg.minDistinctDays()
 					+ " are needed to see a daily pattern.";

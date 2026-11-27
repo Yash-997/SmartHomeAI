@@ -83,7 +83,7 @@ export default function SyntheticPanel({ deviceId }: { deviceId: string }) {
   return (
     <section className="rounded-xl border border-slate-700 bg-slate-800 p-5 shadow-lg" aria-labelledby="synthetic-heading">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 id="synthetic-heading" className="font-semibold">Synthetic demonstration model</h3>
+        <h3 id="synthetic-heading" className="font-semibold">Anomaly detector benchmark (separate synthetic data)</h3>
         <SyntheticBadge />
       </div>
       <p className="mt-2 rounded bg-indigo-900 p-2 text-xs text-indigo-600 ring-1 ring-inset ring-line" role="note">
